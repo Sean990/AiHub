@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
+  AlertTriangle,
   BarChart3,
   Bot,
   CheckCircle2,
@@ -10,15 +11,17 @@ import {
   FileText,
   Gauge,
   History,
+  Info,
+  Keyboard,
   KeyRound,
   Layers,
   LayoutDashboard,
   Loader2,
   MessageSquareText,
   Moon,
+  Pause,
   Play,
   Plus,
-  Power,
   RefreshCw,
   Save,
   Search,
@@ -29,6 +32,7 @@ import {
   Terminal,
   Trash2,
   Wifi,
+  X,
   XCircle
 } from "lucide-react";
 import "./styles.css";
@@ -60,8 +64,18 @@ const navItems = [
   { id: "settings", label: "设置", icon: Settings }
 ];
 
+const navGroups = [
+  { label: "概览", items: ["dashboard"] },
+  { label: "路由配置", items: ["subscriptions", "models", "platformKeys"] },
+  { label: "观测", items: ["usage", "chat", "history", "logs"] },
+  { label: "维护", items: ["importExport", "settings"] }
+];
+
 const THEME_STORAGE_KEY = "aihub-theme";
 const BROWSER_BRIDGE_STORAGE_KEY = "aihub-browser-bridge-state";
+const TOAST_DEFAULT_TIMEOUT = 3600;
+const TOAST_ERROR_TIMEOUT = 6500;
+const SearchFocusContext = React.createContext(() => {});
 const defaultBridge = createBrowserBridge();
 const bridge = window.aihub || defaultBridge;
 
@@ -77,9 +91,48 @@ function App() {
   const [modelAliases, setModelAliases] = useState([]);
   const [migration, setMigration] = useState(null);
   const [providerUsage, setProviderUsage] = useState({});
-  const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
+  const [toasts, setToasts] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const searchFocusRef = useRef(null);
+
+  const dismissToast = useCallback((id) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+
+  const pushToast = useCallback((toast) => {
+    if (!toast || (!toast.message && !toast.title)) {
+      return;
+    }
+    const id = toast.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const tone = toast.tone || "info";
+    const timeout = toast.timeout != null
+      ? toast.timeout
+      : tone === "error"
+        ? TOAST_ERROR_TIMEOUT
+        : TOAST_DEFAULT_TIMEOUT;
+    const next = { ...toast, id, tone, timeout };
+    setToasts((current) => [...current.filter((item) => item.id !== id).slice(-4), next]);
+    if (timeout > 0) {
+      window.setTimeout(() => dismissToast(id), timeout);
+    }
+  }, [dismissToast]);
+
+  const notify = useCallback((message, options = {}) => {
+    if (!message) {
+      return;
+    }
+    pushToast({ tone: "success", ...options, message });
+  }, [pushToast]);
+
+  const reportError = useCallback((errorOrMessage, options = {}) => {
+    const message = errorOrMessage?.message || (typeof errorOrMessage === "string" ? errorOrMessage : String(errorOrMessage));
+    if (!message) {
+      return;
+    }
+    pushToast({ tone: "error", ...options, message });
+  }, [pushToast]);
 
   async function refreshAll() {
     const [
@@ -113,8 +166,6 @@ function App() {
 
   async function runAction(action, successMessage) {
     setBusy(true);
-    setError("");
-    setNotice("");
     try {
       const result = await action();
       await refreshAll();
@@ -123,25 +174,129 @@ function App() {
         setConfig(nextConfig);
       }
       if (successMessage) {
-        setNotice(successMessage);
+        notify(successMessage);
       }
       return result;
     } catch (nextError) {
-      setError(nextError.message || String(nextError));
+      reportError(nextError);
       throw nextError;
     } finally {
       setBusy(false);
     }
   }
 
+  async function copyText(text, successMessage = "已复制到剪贴板") {
+    if (!text) {
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.inset = "0 auto auto 0";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        textarea.remove();
+      }
+      notify(successMessage);
+    } catch (nextError) {
+      reportError(`复制失败：${nextError.message || String(nextError)}`);
+    }
+  }
+
+  function runConfirmed(options) {
+    setConfirm({
+      tone: "danger",
+      confirmLabel: "确认",
+      cancelLabel: "取消",
+      ...options
+    });
+  }
+
+  async function handleConfirm() {
+    if (!confirm) {
+      return;
+    }
+    const current = confirm;
+    setConfirm(null);
+    try {
+      const result = await runAction(current.action, current.successMessage);
+      if (current.onResolved) {
+        current.onResolved(result);
+      }
+    } catch {
+      // runAction already surfaces the error in the global message strip.
+    }
+  }
+
   useEffect(() => {
-    refreshAll().catch((nextError) => setError(nextError.message || String(nextError)));
+    refreshAll().catch((nextError) => reportError(nextError));
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage?.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    function isTextEditingTarget(target) {
+      if (!target) {
+        return false;
+      }
+      const tag = target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+        return true;
+      }
+      return Boolean(target.isContentEditable);
+    }
+
+    function handleShortcut(event) {
+      if (event.defaultPrevented) {
+        return;
+      }
+      const meta = event.metaKey || event.ctrlKey;
+      if (meta && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        searchFocusRef.current?.();
+        return;
+      }
+      if (meta && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        runAction(refreshAll).catch(() => {});
+        return;
+      }
+      if (meta && /^[1-9]$/.test(event.key)) {
+        const targetIndex = Number(event.key) - 1;
+        const target = navItems[targetIndex];
+        if (target) {
+          event.preventDefault();
+          setActiveView(target.id);
+        }
+        return;
+      }
+      if (meta && event.key === "0") {
+        const target = navItems[navItems.length - 1];
+        if (target) {
+          event.preventDefault();
+          setActiveView(target.id);
+        }
+        return;
+      }
+      if (event.key === "?" && !isTextEditingTarget(event.target)) {
+        event.preventDefault();
+        setShortcutsOpen((current) => !current);
+      }
+    }
+
+    document.addEventListener("keydown", handleShortcut);
+    return () => document.removeEventListener("keydown", handleShortcut);
+  }, [reportError]);
 
   const enabledSubscriptions = useMemo(
     () => (config?.subscriptions || []).filter((subscription) => subscription.enabled),
@@ -150,8 +305,9 @@ function App() {
   const recent = history[history.length - 1];
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
+    <SearchFocusContext.Provider value={searchFocusRef}>
+      <div className="app-shell">
+        <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
             <Bot size={18} />
@@ -163,27 +319,35 @@ function App() {
         </div>
 
         <nav className="nav-list" aria-label="主导航">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                className={`nav-button ${activeView === item.id ? "active" : ""}`}
-                key={item.id}
-                onClick={() => setActiveView(item.id)}
-                aria-current={activeView === item.id ? "page" : undefined}
-                type="button"
-              >
-                <Icon size={16} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
+          {navGroups.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <div className="nav-group-label">{group.label}</div>
+              {group.items.map((id) => {
+                const item = navItems.find((entry) => entry.id === id);
+                const Icon = item.icon;
+                const shortcutIndex = navItems.findIndex((entry) => entry.id === id);
+                const shortcutLabel = shortcutIndex >= 0 && shortcutIndex < 9
+                  ? `${getMetaKeyLabel()}+${shortcutIndex + 1}`
+                  : "";
+                return (
+                  <button
+                    className={`nav-button ${activeView === item.id ? "active" : ""}`}
+                    key={item.id}
+                    onClick={() => setActiveView(item.id)}
+                    aria-label={item.label}
+                    aria-current={activeView === item.id ? "page" : undefined}
+                    title={shortcutLabel ? `${item.label} · ${shortcutLabel}` : item.label}
+                    type="button"
+                  >
+                    <Icon size={16} />
+                    <span>{item.label}</span>
+                    {shortcutLabel ? <kbd className="nav-shortcut">{shortcutLabel}</kbd> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
-
-        <div className="sidebar-footer">
-          <StatusPill running={service?.running} />
-          <code title={service?.baseUrl || ""}>{service?.baseUrl || "http://127.0.0.1:8787/v1"}</code>
-        </div>
       </aside>
 
       <main className="workspace">
@@ -194,19 +358,47 @@ function App() {
           </div>
           <div className="topbar-actions">
             <button
+              className="icon-button"
+              onClick={() => setShortcutsOpen(true)}
+              aria-label="键盘快捷键"
+              title="键盘快捷键 · ?"
+              type="button"
+            >
+              <Keyboard size={16} />
+            </button>
+            <button
               className="icon-button theme-toggle"
-              onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
+              onClick={(event) => toggleThemeWithReveal(event.currentTarget, theme, setTheme)}
               aria-label={theme === "dark" ? "切换浅色模式" : "切换深色模式"}
               title={theme === "dark" ? "切换浅色模式" : "切换深色模式"}
               type="button"
             >
               {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
             </button>
-            <button className="icon-button" onClick={() => runAction(refreshAll)} aria-label="刷新全部状态" title="刷新" type="button">
-              <RefreshCw size={16} />
+            <button
+              className={`icon-button ${busy ? "is-busy" : ""}`}
+              onClick={() => runAction(refreshAll)}
+              aria-label="刷新全部状态"
+              title={`刷新 · ${getMetaKeyLabel()}+R`}
+              disabled={busy}
+              type="button"
+            >
+              <RefreshCw className={busy ? "spin" : ""} size={16} />
             </button>
             {service?.running ? (
-              <button className="danger-button" onClick={() => runAction(() => bridge.stopService(), "服务已停止")} type="button">
+              <button
+                className="danger-button"
+                onClick={() =>
+                  runConfirmed({
+                    title: "停止本地网关",
+                    body: `外部工具将无法继续访问 ${service.baseUrl}，直到服务重新启动。`,
+                    confirmLabel: "停止服务",
+                    action: () => bridge.stopService(),
+                    successMessage: "服务已停止"
+                  })
+                }
+                type="button"
+              >
                 <Square size={14} />
                 停止
               </button>
@@ -229,10 +421,9 @@ function App() {
               service={service}
               usage={usage}
               providerUsage={providerUsage}
+              copyText={copyText}
             />
           ) : null}
-
-          <MessageStrip notice={notice} error={error} busy={busy} />
 
           {!config || !service ? (
             <LoadingState />
@@ -254,11 +445,19 @@ function App() {
               providerUsage={providerUsage}
               setProviderUsage={setProviderUsage}
               setActiveView={setActiveView}
+              runConfirmed={runConfirmed}
+              copyText={copyText}
+              notify={notify}
+              reportError={reportError}
             />
           )}
         </div>
       </main>
-    </div>
+        <ConfirmDialog confirm={confirm} onCancel={() => setConfirm(null)} onConfirm={handleConfirm} />
+        <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+        <ToastStack toasts={toasts} onDismiss={dismissToast} busy={busy} />
+      </div>
+    </SearchFocusContext.Provider>
   );
 }
 
@@ -301,7 +500,7 @@ function ViewRouter(props) {
   }
 }
 
-function WorkspaceStatusBar({ config, enabledSubscriptions, modelAliases, platformKeys, service, usage }) {
+function WorkspaceStatusBar({ config, enabledSubscriptions, modelAliases, platformKeys, service, usage, copyText }) {
   const totalSubscriptions = config.subscriptions?.length || 0;
   const activeKeys = (platformKeys || []).filter((key) => key.enabled).length;
   const activeModels = (modelAliases || []).filter((alias) => alias.enabled).length;
@@ -315,7 +514,7 @@ function WorkspaceStatusBar({ config, enabledSubscriptions, modelAliases, platfo
         <code title={service.baseUrl}>{service.baseUrl}</code>
         <button
           className="inline-copy-button"
-          onClick={() => navigator.clipboard?.writeText(service.baseUrl)}
+          onClick={() => copyText(service.baseUrl, "Base URL 已复制")}
           aria-label="复制 Base URL"
           title="复制 Base URL"
           type="button"
@@ -347,36 +546,53 @@ function WorkspaceStatusBar({ config, enabledSubscriptions, modelAliases, platfo
   );
 }
 
-function DashboardView({ config, service, enabledSubscriptions, history, logs, usage, platformKeys, modelAliases, recent, runAction, setActiveView }) {
+function DashboardView({ config, service, enabledSubscriptions, logs, usage, recent, runAction, setActiveView, runConfirmed }) {
   const providerSummaries = buildProviderSummaries(config.subscriptions || []);
   const routingLanes = [...enabledSubscriptions]
     .sort((a, b) => Number(a.priority || 9999) - Number(b.priority || 9999))
     .slice(0, 4);
+  const primaryRoute = routingLanes[0];
 
   return (
-    <div className="stack">
+    <div className="stack dashboard-view">
       <section className="service-hero">
-        <div className="service-hero-card">
+        <div className={`service-hero-card ${service.running ? "running" : "stopped"}`}>
           <div className="service-hero-head">
             <div>
-              <p className="eyebrow">Local Gateway</p>
+              <p className="eyebrow">Gateway Control</p>
               <h2>{service.running ? "网关正在接管本机 AI 请求" : "网关待启动"}</h2>
               <p className="muted">统一接入订阅池、平台 Key 和公开模型别名，外部工具只需要指向本地 API。</p>
             </div>
-            <StatusPill running={service.running} />
           </div>
-          <div className="endpoint-box">
+          <div className="hero-route-summary">
             <div>
-              <span>Base URL</span>
-              <code>{service.baseUrl}</code>
+              <span>首选路由</span>
+              <strong>{primaryRoute ? primaryRoute.name : "暂无启用订阅"}</strong>
             </div>
-            <button className="icon-button" onClick={() => navigator.clipboard?.writeText(service.baseUrl)} aria-label="复制 Base URL" title="复制 Base URL" type="button">
-              <Clipboard size={15} />
-            </button>
+            <div>
+              <span>首选模型</span>
+              <strong>{primaryRoute?.model || primaryRoute?.models?.[0] || "—"}</strong>
+            </div>
+            <div>
+              <span>最近响应</span>
+              <strong>{recent ? (recent.ok ? `成功 · ${formatNumber(recent.usage?.totalTokens || 0)} tk` : "失败") : "暂无"}</strong>
+            </div>
           </div>
           <div className="service-hero-actions">
             {service.running ? (
-              <button className="danger-button" onClick={() => runAction(() => bridge.stopService(), "服务已停止")} type="button">
+              <button
+                className="danger-button"
+                onClick={() =>
+                  runConfirmed({
+                    title: "停止本地网关",
+                    body: `外部工具将无法继续访问 ${service.baseUrl}，直到服务重新启动。`,
+                    confirmLabel: "停止网关",
+                    action: () => bridge.stopService(),
+                    successMessage: "服务已停止"
+                  })
+                }
+                type="button"
+              >
                 <Square size={14} />
                 停止网关
               </button>
@@ -425,7 +641,7 @@ function DashboardView({ config, service, enabledSubscriptions, history, logs, u
           </div>
           <div className="routing-ladder" aria-label="当前路由优先级">
             {routingLanes.length > 0 ? routingLanes.map((subscription, index) => (
-              <div className="routing-step" key={subscription.name}>
+              <div className={`routing-step ${index === 0 ? "primary" : ""}`} key={subscription.name}>
                 <span>{index + 1}</span>
                 <div>
                   <strong>{subscription.name}</strong>
@@ -439,20 +655,11 @@ function DashboardView({ config, service, enabledSubscriptions, history, logs, u
         </div>
       </section>
 
-      <section className="metrics-grid">
-        <Metric label="服务状态" value={service.running ? "运行中" : "已停止"} icon={Power} tone={service.running ? "good" : "warn"} />
-        <Metric label="启用订阅" value={enabledSubscriptions.length} icon={Database} />
-        <Metric label="启用平台 Key" value={(platformKeys || []).filter((key) => key.enabled).length} icon={Clipboard} />
-        <Metric label="公开模型" value={(modelAliases || []).filter((alias) => alias.enabled).length} icon={SlidersHorizontal} />
-        <Metric label="总 Token" value={formatNumber(usage.total.totalTokens)} icon={Activity} />
-      </section>
-
-      <section className="metrics-grid">
-        <Metric label="请求总数" value={formatNumber(usage.total.requests)} icon={BarChart3} />
+      <section className="metrics-grid hero-metrics">
         <Metric label="成功率" value={formatPercent(usage.total.successRate)} icon={CheckCircle2} tone="good" />
-        <Metric label="缓存命中率" value={formatPercent(usage.total.cacheHitRate)} icon={Gauge} tone={usage.total.cacheHitRate > 0 ? "good" : "neutral"} />
-        <Metric label="输入 Token" value={formatNumber(usage.total.inputTokens)} icon={Terminal} />
-        <Metric label="输出 Token" value={formatNumber(usage.total.outputTokens)} icon={Bot} />
+        <Metric label="总 Token" value={formatNumber(usage.total.totalTokens)} icon={Activity} />
+        <Metric label="缓存命中率" value={formatPercent(usage.total.cacheHitRate)} icon={Gauge} tone="good" />
+        <Metric label="平均延迟" value={`${formatNumber(usage.total.averageLatencyMs)} ms`} icon={Terminal} />
       </section>
 
       <section className="two-column">
@@ -496,7 +703,7 @@ function buildProviderSummaries(subscriptions = []) {
   });
 }
 
-function SubscriptionsView({ config, usage, runAction, providerUsage, setProviderUsage }) {
+function SubscriptionsView({ config, usage, runAction, providerUsage, setProviderUsage, runConfirmed }) {
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
@@ -530,197 +737,153 @@ function SubscriptionsView({ config, usage, runAction, providerUsage, setProvide
     return result;
   }
 
-  return (
-    <div className="stack">
-      <section className="panel toolbar-panel">
-        <div className="search-box">
-          <Search size={16} />
-          <input value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="按名称、供应商或模型筛选订阅" placeholder="按名称、供应商或模型筛选" />
-        </div>
-        <div className="toolbar-meta">
-          <span>{providerFilter === "all" ? "全部供应商" : providers.find((provider) => provider.value === providerFilter)?.label}</span>
-          <strong>{subscriptions.length}</strong>
-          <span>个匹配订阅</span>
-        </div>
-        {(filter || providerFilter !== "all") ? (
-          <button className="secondary-button" onClick={() => { setFilter(""); setProviderFilter("all"); }} type="button">
-            <XCircle size={16} />
-            清除筛选
-          </button>
-        ) : null}
-        <button className="primary-button" onClick={() => setEditing(emptySubscription())} type="button">
-          <Plus size={16} />
-          新增订阅
-        </button>
-      </section>
+  const totalEnabled = allSubscriptions.filter((subscription) => subscription.enabled).length;
+  const totalModels = allSubscriptions.reduce((sum, item) => sum + (item.models?.length || (item.model ? 1 : 0)), 0);
+  const providerTabValues = ["all", ...providers.map((provider) => provider.value)];
 
-      <section className="provider-summary-grid">
+  function handleProviderTabKey(event, currentValue) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    const currentIndex = providerTabValues.indexOf(currentValue);
+    const lastIndex = providerTabValues.length - 1;
+    const nextIndex = {
+      ArrowLeft: currentIndex <= 0 ? lastIndex : currentIndex - 1,
+      ArrowRight: currentIndex >= lastIndex ? 0 : currentIndex + 1,
+      Home: 0,
+      End: lastIndex
+    }[event.key];
+    const nextValue = providerTabValues[nextIndex];
+    setProviderFilter(nextValue);
+    event.currentTarget.parentElement
+      ?.querySelector(`[data-provider-tab="${nextValue}"]`)
+      ?.focus();
+  }
+
+  return (
+    <div className="stack subscriptions-view">
+      <section className="provider-tabs" role="tablist" aria-label="按供应商筛选">
         <button
-          className={`provider-summary-card all ${providerFilter === "all" ? "active" : ""}`}
+          className={`provider-tab all ${providerFilter === "all" ? "active" : ""}`}
+          data-provider-tab="all"
           onClick={() => setProviderFilter("all")}
-          aria-pressed={providerFilter === "all"}
+          onKeyDown={(event) => handleProviderTabKey(event, "all")}
+          role="tab"
+          aria-selected={providerFilter === "all"}
           type="button"
-          title="显示全部供应商"
         >
-          <span className="provider-all-mark"><Layers size={17} /></span>
-          <div>
-            <div className="provider-summary-title">全部供应商</div>
-            <div className="provider-summary-meta">
-              {allSubscriptions.filter((subscription) => subscription.enabled).length}/{allSubscriptions.length} 启用 · {allSubscriptions.reduce((sum, item) => sum + (item.models?.length || (item.model ? 1 : 0)), 0)} 模型
-            </div>
-          </div>
+          <span className="provider-tab-mark">
+            <Layers size={14} />
+          </span>
+          <span className="provider-tab-label">全部</span>
+          <span className="provider-tab-meta">{totalEnabled}/{allSubscriptions.length}</span>
         </button>
         {allGroups.map((group) => (
           <button
-            className={`provider-summary-card ${group.value} ${providerFilter === group.value ? "active" : ""}`}
+            className={`provider-tab ${group.value} ${providerFilter === group.value ? "active" : ""}`}
+            data-provider-tab={group.value}
             key={group.value}
             onClick={() => setProviderFilter(group.value)}
-            aria-pressed={providerFilter === group.value}
+            onKeyDown={(event) => handleProviderTabKey(event, group.value)}
+            role="tab"
+            aria-selected={providerFilter === group.value}
             type="button"
-            title={`筛选 ${group.label}`}
           >
-            <ProviderBadge provider={group.value} />
-            <div>
-              <div className="provider-summary-title">{group.label}</div>
-              <div className="provider-summary-meta">{group.enabled}/{group.total} 启用 · {group.models} 模型</div>
-            </div>
+            <ProviderMark provider={group.value} size={14} />
+            <span className="provider-tab-label">{group.label}</span>
+            <span className="provider-tab-meta">{group.enabled}/{group.total}</span>
           </button>
         ))}
+        <div className="provider-tabs-spacer" />
+        <div className="provider-tabs-summary">
+          <span>{totalModels}</span>
+          <small>模型</small>
+        </div>
       </section>
+
+      <SearchBar
+        value={filter}
+        onChange={setFilter}
+        ariaLabel="按名称、供应商或模型筛选订阅"
+        placeholder="搜索名称、模型或备注…"
+        matchLabel={
+          <>
+            匹配 <strong>{subscriptions.length}</strong> 个订阅
+          </>
+        }
+      />
 
       {grouped.map((group) => {
         const groupModels = group.items.reduce((sum, item) => sum + (item.models?.length || (item.model ? 1 : 0)), 0);
+        const groupEnabled = group.items.filter((item) => item.enabled).length;
         return (
-          <section className="subscription-section" key={group.value}>
-            <div className="subscription-section-head">
-              <div>
+          <section className="sub-section" key={group.value}>
+            <header className="sub-section-head">
+              <div className="sub-section-title">
+                <ProviderMark provider={group.value} size={16} />
                 <h2>{group.label}</h2>
-                <p className="muted">{group.items.length} 个订阅 · {groupModels} 个模型</p>
+                <span className="sub-section-count">{group.items.length}</span>
               </div>
-              <ProviderBadge provider={group.value} />
-            </div>
-            <div className="subscription-grid">
-              {group.items.map((subscription) => {
-                const stats = usageByName.get(subscription.name) || emptyUsageBucket(subscription);
-                return (
-                  <article
-                    className={`subscription-card ${subscription.enabled ? "active" : "disabled"}`}
-                    key={subscription.name}
-                  >
-                    <header className="subscription-card-head">
-                      <div className="subscription-card-head-main">
-                        <ProviderBadge provider={subscription.provider} />
-                        <div className="subscription-card-title" title={subscription.name}>{subscription.name}</div>
-                      </div>
-                      <label className="switch" title={subscription.enabled ? "停用此订阅" : "启用此订阅"}>
-                        <input
-                          checked={subscription.enabled}
-                          type="checkbox"
-                          aria-label={`${subscription.enabled ? "禁用" : "启用"}订阅 ${subscription.name}`}
-                          onChange={(event) =>
-                            runAction(() =>
-                              bridge.setSubscriptionEnabled({
-                                name: subscription.name,
-                                enabled: event.target.checked
-                              })
-                            )
-                          }
-                        />
-                        <span />
-                      </label>
-                    </header>
-
-                    <div className="subscription-card-body">
-                      <div className="subscription-card-meta">
-                        <code>{subscription.model || "-"}</code>
-                        {subscription.website ? (
-                          <a href={subscription.website} target="_blank" rel="noreferrer" title={`访问官网: ${subscription.website}`} className="inline-icon">
-                            <Wifi size={12} />
-                          </a>
-                        ) : null}
-                        {subscription.notes ? (
-                          <span title={subscription.notes} className="inline-icon">
-                            <FileText size={12} />
-                          </span>
-                        ) : null}
-                      </div>
-                      <ModelChips models={subscription.models || (subscription.model ? [subscription.model] : [])} />
-                      <ProviderUsageMini usage={providerUsage[subscription.name]} />
-                    </div>
-
-                    <div className="subscription-card-stats">
-                      <div>
-                        <span>请求</span>
-                        <strong>{formatNumber(stats.requests)}</strong>
-                      </div>
-                      <div>
-                        <span>Token</span>
-                        <strong>{formatNumber(stats.totalTokens)}</strong>
-                      </div>
-                      <div>
-                        <span>缓存</span>
-                        <strong>{formatPercent(stats.cacheHitRate)}</strong>
-                      </div>
-                    </div>
-
-                    <footer className="subscription-card-foot">
-                      <label className="subscription-priority" title="路由优先级（数字越小越优先）">
-                        <span>优先级</span>
-                        <input
-                          type="number"
-                          value={subscription.priority}
-                          aria-label={`设置 ${subscription.name} 的优先级`}
-                          onChange={(event) =>
-                            runAction(() =>
-                              bridge.setSubscriptionPriority({
-                                name: subscription.name,
-                                priority: Number(event.target.value)
-                              })
-                            )
-                          }
-                        />
-                      </label>
-                      <div className="row-actions">
-                        <button
-                          className="icon-button"
-                          onClick={() => runAction(() => bridge.fetchSubscriptionModels(subscription.name), "模型列表已更新")}
-                          aria-label={`一键获取 ${subscription.name} 的模型列表`}
-                          title="一键获取模型列表"
-                          type="button"
-                        >
-                          <RefreshCw size={15} />
-                        </button>
-                        <button
-                          className="icon-button"
-                          onClick={() => queryUsage(subscription)}
-                          aria-label={`查询 ${subscription.name} 的供应商用量`}
-                          title="查询供应商用量"
-                          type="button"
-                        >
-                          <Gauge size={15} />
-                        </button>
-                        <button className="icon-button" onClick={() => setEditing(subscription)} aria-label={`编辑订阅 ${subscription.name}`} title="编辑" type="button">
-                          <Settings size={15} />
-                        </button>
-                        <button
-                          className="icon-button danger"
-                          onClick={() => runAction(() => bridge.removeSubscription(subscription.name), "订阅已删除")}
-                          aria-label={`删除订阅 ${subscription.name}`}
-                          title="删除"
-                          type="button"
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    </footer>
-                  </article>
-                );
-              })}
+              <span className="sub-section-meta">
+                {groupEnabled} 启用 · {groupModels} 模型
+              </span>
+            </header>
+            <div className="sub-row-list">
+              {group.items.map((subscription) => (
+                <SubscriptionRow
+                  key={subscription.name}
+                  subscription={subscription}
+                  stats={usageByName.get(subscription.name) || emptyUsageBucket(subscription)}
+                  providerUsage={providerUsage[subscription.name]}
+                  onEdit={() => setEditing(subscription)}
+                  onToggle={(enabled) =>
+                    runAction(() => bridge.setSubscriptionEnabled({ name: subscription.name, enabled }))
+                  }
+                  onPriorityChange={(priority) =>
+                    runAction(() => bridge.setSubscriptionPriority({ name: subscription.name, priority }))
+                  }
+                  onFetchModels={() =>
+                    runAction(() => bridge.fetchSubscriptionModels(subscription.name), "模型列表已更新")
+                  }
+                  onQueryUsage={() => queryUsage(subscription)}
+                  onDelete={() =>
+                    runConfirmed({
+                      title: "删除订阅",
+                      body: `将删除订阅 "${subscription.name}"。相关路由和外部调用可能受到影响，此操作不可撤销。`,
+                      confirmLabel: "删除订阅",
+                      action: () => bridge.removeSubscription(subscription.name),
+                      successMessage: "订阅已删除"
+                    })
+                  }
+                />
+              ))}
             </div>
           </section>
         );
       })}
-      {subscriptions.length === 0 ? <section className="panel"><EmptyState title="没有匹配的订阅" body="新增 Gemini、Claude 或 Codex 订阅后即可开始路由。" /></section> : null}
+      {subscriptions.length === 0 ? (
+        <section className="panel sub-empty-panel">
+          <EmptyState
+            title={filter || providerFilter !== "all" ? "没有匹配的订阅" : "暂无订阅"}
+            body={
+              filter || providerFilter !== "all"
+                ? "试试清空搜索或切换其他供应商分组。"
+                : "点击右下角的 + 按钮，新增一个 Gemini、Claude 或 Codex 订阅。"
+            }
+          />
+        </section>
+      ) : null}
+
+      <button
+        className="fab-add"
+        onClick={() => setEditing(emptySubscription())}
+        aria-label="新增订阅"
+        title="新增订阅"
+        type="button"
+      >
+        <Plus size={20} />
+      </button>
 
       {editing ? (
         <SubscriptionDialog
@@ -733,6 +896,193 @@ function SubscriptionsView({ config, usage, runAction, providerUsage, setProvide
         />
       ) : null}
     </div>
+  );
+}
+
+function SubscriptionRow({
+  subscription,
+  stats,
+  providerUsage,
+  onEdit,
+  onToggle,
+  onPriorityChange,
+  onFetchModels,
+  onQueryUsage,
+  onDelete
+}) {
+  const models = subscription.models?.length ? subscription.models : subscription.model ? [subscription.model] : [];
+  const isActive = Boolean(subscription.enabled);
+  return (
+    <article
+      className={`sub-row ${isActive ? "is-active" : "is-disabled"}`}
+      role="group"
+      aria-label={`订阅 ${subscription.name}`}
+    >
+      <div className="sub-row-glow" aria-hidden />
+      <div className="sub-row-main">
+        <div className="sub-row-icon" aria-hidden>
+          <ProviderMark provider={subscription.provider} size={18} />
+        </div>
+        <div className="sub-row-identity">
+          <div className="sub-row-name-line">
+            <h3 className="sub-row-name" title={subscription.name}>{subscription.name}</h3>
+            <ProviderBadge provider={subscription.provider} />
+            {subscription.priority != null ? (
+              <span className="sub-row-priority-badge" title="路由优先级">P{subscription.priority}</span>
+            ) : null}
+          </div>
+          <div className="sub-row-meta">
+            {subscription.website ? (
+              <a
+                href={subscription.website}
+                target="_blank"
+                rel="noreferrer"
+                className="sub-row-link"
+                title={`打开官网 ${subscription.website}`}
+              >
+                <Wifi size={11} />
+                <span>{subscription.website.replace(/^https?:\/\//, "")}</span>
+              </a>
+            ) : (
+              <span className="sub-row-muted"><Wifi size={11} />未配置接口地址</span>
+            )}
+            {subscription.notes ? (
+              <span className="sub-row-muted" title={subscription.notes}>
+                <FileText size={11} />
+                <span className="sub-row-notes">{subscription.notes}</span>
+              </span>
+            ) : null}
+          </div>
+          <div className="sub-row-models">
+            {models.length > 0 ? models.slice(0, 4).map((model) => (
+              <code key={model} title={model}>{model}</code>
+            )) : <span className="sub-row-muted">尚未指定模型</span>}
+            {models.length > 4 ? <span className="sub-row-more">+{models.length - 4}</span> : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="sub-row-stats" aria-label="订阅用量统计">
+        <div>
+          <span>请求</span>
+          <strong>{formatNumber(stats.requests)}</strong>
+        </div>
+        <div>
+          <span>Token</span>
+          <strong>{formatNumber(stats.totalTokens)}</strong>
+        </div>
+        <div>
+          <span>缓存</span>
+          <strong>{formatPercent(stats.cacheHitRate)}</strong>
+        </div>
+        <div className="sub-row-quota" title="供应商额度（点击右侧按钮查询）">
+          <span>额度</span>
+          <strong>{providerUsage ? formatProviderUsage(providerUsage) : "—"}</strong>
+        </div>
+      </div>
+
+      <div className="sub-row-controls">
+        <label className="sub-row-priority" title="路由优先级（数字越小越优先）">
+          <span>优先级</span>
+          <PriorityInput
+            ariaLabel={`设置 ${subscription.name} 的优先级`}
+            value={subscription.priority}
+            onCommit={onPriorityChange}
+          />
+        </label>
+        <label className="switch sub-row-switch" title={isActive ? "停用订阅" : "启用订阅"}>
+          <input
+            checked={isActive}
+            type="checkbox"
+            aria-label={`${isActive ? "停用" : "启用"}订阅 ${subscription.name}`}
+            onChange={(event) => onToggle(event.target.checked)}
+          />
+          <span />
+        </label>
+        <div className="sub-row-actions">
+          <button
+            className="icon-button"
+            onClick={onFetchModels}
+            aria-label={`一键获取 ${subscription.name} 的模型列表`}
+            title="一键获取模型列表"
+            type="button"
+          >
+            <RefreshCw size={15} />
+          </button>
+          <button
+            className="icon-button"
+            onClick={onQueryUsage}
+            aria-label={`查询 ${subscription.name} 的供应商用量`}
+            title="查询供应商额度"
+            type="button"
+          >
+            <Gauge size={15} />
+          </button>
+          <button
+            className="icon-button"
+            onClick={onEdit}
+            aria-label={`编辑订阅 ${subscription.name}`}
+            title="编辑"
+            type="button"
+          >
+            <Settings size={15} />
+          </button>
+          <button
+            className="icon-button danger"
+            onClick={onDelete}
+            aria-label={`删除订阅 ${subscription.name}`}
+            title="删除"
+            type="button"
+          >
+            <Trash2 size={15} />
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function PriorityInput({ value, ariaLabel, onCommit }) {
+  const [draft, setDraft] = useState(String(value ?? ""));
+
+  useEffect(() => {
+    setDraft(String(value ?? ""));
+  }, [value]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    const nextValue = Number(trimmed);
+    if (!trimmed || !Number.isFinite(nextValue)) {
+      setDraft(String(value ?? ""));
+      return;
+    }
+    if (nextValue !== Number(value)) {
+      onCommit(nextValue);
+    }
+  }
+
+  function handleKeyDown(event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.blur();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setDraft(String(value ?? ""));
+      event.currentTarget.blur();
+    }
+  }
+
+  return (
+    <input
+      aria-label={ariaLabel}
+      inputMode="numeric"
+      type="number"
+      value={draft}
+      onBlur={commit}
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={handleKeyDown}
+    />
   );
 }
 
@@ -761,16 +1111,23 @@ function UsageView({ usage, refreshAll, providerUsage, setProviderUsage, runActi
         <Metric label="缓存命中 Token" value={formatNumber(usage.total.cachedInputTokens)} icon={Gauge} tone="good" />
         <Metric label="平均延迟" value={`${formatNumber(usage.total.averageLatencyMs)} ms`} icon={Terminal} />
       </section>
-      <section className="panel toolbar-panel">
-        <div className="search-box">
-          <Search size={16} />
-          <input value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="筛选订阅用量" placeholder="筛选订阅用量" />
-        </div>
-        <button className="secondary-button" onClick={refreshAll} type="button">
-          <RefreshCw size={16} />
-          刷新
-        </button>
-      </section>
+      <SearchBar
+        value={filter}
+        onChange={setFilter}
+        ariaLabel="筛选订阅用量"
+        placeholder="筛选订阅、Provider 或模型…"
+        matchLabel={
+          <>
+            共 <strong>{rows.length}</strong> 条
+          </>
+        }
+        rightSlot={
+          <button className="secondary-button" onClick={refreshAll} type="button">
+            <RefreshCw size={16} />
+            刷新
+          </button>
+        }
+      />
       <section className="table-panel">
         <div className="table-wrapper">
           <table className="usage-table">
@@ -820,7 +1177,7 @@ function UsageView({ usage, refreshAll, providerUsage, setProviderUsage, runActi
   );
 }
 
-function PlatformKeysView({ platformKeys, service, runAction }) {
+function PlatformKeysView({ platformKeys, service, runAction, runConfirmed, copyText }) {
   const [form, setForm] = useState({ name: "", monthlyRequestQuota: "", monthlyTokenQuota: "" });
   const [createdKey, setCreatedKey] = useState("");
   const enabledCount = (platformKeys || []).filter((key) => key.enabled).length;
@@ -828,16 +1185,20 @@ function PlatformKeysView({ platformKeys, service, runAction }) {
   const monthTokens = (platformKeys || []).reduce((sum, key) => sum + Number(key.monthTokens || 0), 0);
 
   async function createKey() {
-    const created = await runAction(
-      () => bridge.createPlatformKey({
-        name: form.name,
-        monthlyRequestQuota: Number(form.monthlyRequestQuota || 0),
-        monthlyTokenQuota: Number(form.monthlyTokenQuota || 0)
-      }),
-      "平台 Key 已创建"
-    );
-    setCreatedKey(created.key);
-    setForm({ name: "", monthlyRequestQuota: "", monthlyTokenQuota: "" });
+    try {
+      const created = await runAction(
+        () => bridge.createPlatformKey({
+          name: form.name.trim(),
+          monthlyRequestQuota: Number(form.monthlyRequestQuota || 0),
+          monthlyTokenQuota: Number(form.monthlyTokenQuota || 0)
+        }),
+        "平台 Key 已创建"
+      );
+      setCreatedKey(created.key);
+      setForm({ name: "", monthlyRequestQuota: "", monthlyTokenQuota: "" });
+    } catch {
+      // runAction already surfaced the error
+    }
   }
 
   return (
@@ -855,33 +1216,47 @@ function PlatformKeysView({ platformKeys, service, runAction }) {
           <p className="muted">创建平台 Key 后，外部 CLI 需要用它作为 Bearer Token 调用本地网关。</p>
           <div className="copy-row">
             <code>{service.baseUrl}</code>
-            <button className="icon-button" onClick={() => navigator.clipboard?.writeText(service.baseUrl)} aria-label="复制 Base URL" title="复制 Base URL" type="button">
+            <button className="icon-button" onClick={() => copyText(service.baseUrl, "Base URL 已复制")} aria-label="复制 Base URL" title="复制 Base URL" type="button">
               <Clipboard size={16} />
             </button>
           </div>
         </div>
-        <div className="mini-form">
+        <form
+          className="mini-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!form.name.trim()) {
+              return;
+            }
+            createKey();
+          }}
+        >
           <Field label="Key 名称">
-            <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="default-cli" />
+            <input
+              value={form.name}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              placeholder="default-cli"
+              required
+            />
           </Field>
           <Field label="月请求额度">
-            <input type="number" value={form.monthlyRequestQuota} onChange={(event) => setForm({ ...form, monthlyRequestQuota: event.target.value })} placeholder="0 表示不限" />
+            <input type="number" min="0" value={form.monthlyRequestQuota} onChange={(event) => setForm({ ...form, monthlyRequestQuota: event.target.value })} placeholder="0 表示不限" />
           </Field>
           <Field label="月 Token 额度">
-            <input type="number" value={form.monthlyTokenQuota} onChange={(event) => setForm({ ...form, monthlyTokenQuota: event.target.value })} placeholder="0 表示不限" />
+            <input type="number" min="0" value={form.monthlyTokenQuota} onChange={(event) => setForm({ ...form, monthlyTokenQuota: event.target.value })} placeholder="0 表示不限" />
           </Field>
-          <button className="primary-button" onClick={createKey} type="button">
+          <button className="primary-button" type="submit" disabled={!form.name.trim()}>
             <Plus size={16} />
             创建 Key
           </button>
-        </div>
+        </form>
       </section>
 
       {createdKey ? (
         <section className="message-strip key-reveal">
           <KeyRound size={16} />
           <code>{createdKey}</code>
-          <button className="icon-button" onClick={() => navigator.clipboard?.writeText(createdKey)} aria-label="复制完整平台 Key" title="复制完整 Key" type="button">
+          <button className="icon-button" onClick={() => copyText(createdKey, "完整平台 Key 已复制")} aria-label="复制完整平台 Key" title="复制完整 Key" type="button">
             <Clipboard size={16} />
           </button>
         </section>
@@ -927,7 +1302,15 @@ function PlatformKeysView({ platformKeys, service, runAction }) {
                     </button>
                     <button
                       className="icon-button danger"
-                      onClick={() => runAction(() => bridge.deletePlatformKey(key.id), "平台 Key 已删除")}
+                      onClick={() =>
+                        runConfirmed({
+                          title: "删除平台 Key",
+                          body: `将删除平台 Key "${key.name}"。使用此前缀 ${key.keyPrefix} 的外部工具将无法继续访问本地网关。`,
+                          confirmLabel: "删除 Key",
+                          action: () => bridge.deletePlatformKey(key.id),
+                          successMessage: "平台 Key 已删除"
+                        })
+                      }
                       aria-label={`删除平台 Key ${key.name}`}
                       title="删除"
                       type="button"
@@ -947,27 +1330,45 @@ function PlatformKeysView({ platformKeys, service, runAction }) {
   );
 }
 
-function ModelsView({ config, modelAliases, runAction }) {
+function ModelsView({ config, modelAliases, runAction, runConfirmed }) {
   const [aliasForm, setAliasForm] = useState({ alias: "", description: "" });
   const [routeForm, setRouteForm] = useState({ alias: "", subscriptionName: "", providerModel: "", priority: 100, enabled: true });
+  const [filter, setFilter] = useState("");
   const enabledAliases = modelAliases.filter((alias) => alias.enabled).length;
   const routeCount = modelAliases.reduce((sum, alias) => sum + alias.routes.length, 0);
+  const normalizedFilter = filter.trim().toLowerCase();
+  const filteredAliases = normalizedFilter
+    ? modelAliases.filter((alias) => {
+        const haystack = `${alias.alias} ${alias.description || ""} ${(alias.routes || [])
+          .map((route) => `${route.subscriptionName} ${route.providerModel || ""}`)
+          .join(" ")}`.toLowerCase();
+        return haystack.includes(normalizedFilter);
+      })
+    : modelAliases;
 
   async function saveAlias() {
-    await runAction(
-      () => bridge.upsertModelAlias({ alias: aliasForm.alias, description: aliasForm.description, enabled: true }),
-      "模型别名已保存"
-    );
-    setAliasForm({ alias: "", description: "" });
-    setRouteForm((current) => ({ ...current, alias: aliasForm.alias || current.alias }));
+    try {
+      await runAction(
+        () => bridge.upsertModelAlias({ alias: aliasForm.alias.trim(), description: aliasForm.description.trim(), enabled: true }),
+        "模型别名已保存"
+      );
+      setAliasForm({ alias: "", description: "" });
+      setRouteForm((current) => ({ ...current, alias: aliasForm.alias || current.alias }));
+    } catch {
+      // already surfaced
+    }
   }
 
   async function saveRoute() {
-    await runAction(
-      () => bridge.upsertModelRoute(routeForm),
-      "模型路由已保存"
-    );
-    setRouteForm({ alias: routeForm.alias, subscriptionName: "", providerModel: "", priority: 100, enabled: true });
+    try {
+      await runAction(
+        () => bridge.upsertModelRoute(routeForm),
+        "模型路由已保存"
+      );
+      setRouteForm({ alias: routeForm.alias, subscriptionName: "", providerModel: "", priority: 100, enabled: true });
+    } catch {
+      // already surfaced
+    }
   }
 
   return (
@@ -980,29 +1381,47 @@ function ModelsView({ config, modelAliases, runAction }) {
       </section>
 
       <section className="two-column">
-        <div className="panel">
+        <form
+          className="panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!aliasForm.alias.trim()) {
+              return;
+            }
+            saveAlias();
+          }}
+        >
           <h2>创建公开模型名</h2>
           <div className="form-grid compact two-fields">
             <Field label="公开模型名">
-              <input value={aliasForm.alias} onChange={(event) => setAliasForm({ ...aliasForm, alias: event.target.value })} placeholder="gpt-4o" />
+              <input value={aliasForm.alias} onChange={(event) => setAliasForm({ ...aliasForm, alias: event.target.value })} placeholder="gpt-4o" required />
             </Field>
             <Field label="说明">
               <input value={aliasForm.description} onChange={(event) => setAliasForm({ ...aliasForm, description: event.target.value })} placeholder="给外部工具看到的模型" />
             </Field>
           </div>
           <div className="button-row">
-            <button className="primary-button" disabled={!aliasForm.alias.trim()} onClick={saveAlias} type="button">
+            <button className="primary-button" disabled={!aliasForm.alias.trim()} type="submit">
               <Plus size={16} />
               保存模型
             </button>
           </div>
-        </div>
+        </form>
 
-        <div className="panel">
+        <form
+          className="panel"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!routeForm.alias || !routeForm.subscriptionName) {
+              return;
+            }
+            saveRoute();
+          }}
+        >
           <h2>绑定订阅路由</h2>
           <div className="form-grid compact">
             <Field label="公开模型">
-              <select value={routeForm.alias} onChange={(event) => setRouteForm({ ...routeForm, alias: event.target.value })}>
+              <select value={routeForm.alias} onChange={(event) => setRouteForm({ ...routeForm, alias: event.target.value })} required>
                 <option value="">选择模型</option>
                 {modelAliases.map((alias) => (
                   <option key={alias.alias} value={alias.alias}>{alias.alias}</option>
@@ -1010,7 +1429,7 @@ function ModelsView({ config, modelAliases, runAction }) {
               </select>
             </Field>
             <Field label="订阅">
-              <select value={routeForm.subscriptionName} onChange={(event) => setRouteForm({ ...routeForm, subscriptionName: event.target.value })}>
+              <select value={routeForm.subscriptionName} onChange={(event) => setRouteForm({ ...routeForm, subscriptionName: event.target.value })} required>
                 <option value="">选择订阅</option>
                 {(config.subscriptions || []).map((subscription) => (
                   <option key={subscription.name} value={subscription.name}>{subscription.name}</option>
@@ -1025,13 +1444,25 @@ function ModelsView({ config, modelAliases, runAction }) {
             </Field>
           </div>
           <div className="button-row">
-            <button className="primary-button" disabled={!routeForm.alias || !routeForm.subscriptionName} onClick={saveRoute} type="button">
+            <button className="primary-button" disabled={!routeForm.alias || !routeForm.subscriptionName} type="submit">
               <Plus size={16} />
               添加路由
             </button>
           </div>
-        </div>
+        </form>
       </section>
+
+      <SearchBar
+        value={filter}
+        onChange={setFilter}
+        ariaLabel="筛选模型别名"
+        placeholder="筛选别名、说明或路由订阅…"
+        matchLabel={
+          <>
+            匹配 <strong>{filteredAliases.length}</strong> / {modelAliases.length}
+          </>
+        }
+      />
 
       <section className="table-panel">
         <div className="table-wrapper">
@@ -1046,7 +1477,7 @@ function ModelsView({ config, modelAliases, runAction }) {
             </tr>
           </thead>
           <tbody>
-            {modelAliases.map((alias) => (
+            {filteredAliases.map((alias) => (
               <tr key={alias.alias}>
                 <td><code>{alias.alias}</code></td>
                 <td>{alias.enabled ? <StatusLabel ok text="启用" /> : <StatusLabel text="禁用" />}</td>
@@ -1058,7 +1489,15 @@ function ModelsView({ config, modelAliases, runAction }) {
                         {route.priority}: {route.subscriptionName} / {route.providerModel || "默认"}
                         <button
                           className="inline-icon"
-                          onClick={() => runAction(() => bridge.deleteModelRoute(route.id), "路由已删除")}
+                          onClick={() =>
+                            runConfirmed({
+                              title: "删除模型路由",
+                              body: `将删除 ${alias.alias} 到 ${route.subscriptionName} 的路由。该公开模型可能失去一个 fallback 入口。`,
+                              confirmLabel: "删除路由",
+                              action: () => bridge.deleteModelRoute(route.id),
+                              successMessage: "路由已删除"
+                            })
+                          }
                           aria-label={`删除 ${alias.alias} 到 ${route.subscriptionName} 的路由`}
                           title="删除路由"
                           type="button"
@@ -1082,7 +1521,15 @@ function ModelsView({ config, modelAliases, runAction }) {
                     </button>
                     <button
                       className="icon-button danger"
-                      onClick={() => runAction(() => bridge.deleteModelAlias(alias.alias), "模型别名已删除")}
+                      onClick={() =>
+                        runConfirmed({
+                          title: "删除模型别名",
+                          body: `将删除公开模型 "${alias.alias}" 及其路由。外部工具继续请求该模型名时会失败。`,
+                          confirmLabel: "删除模型",
+                          action: () => bridge.deleteModelAlias(alias.alias),
+                          successMessage: "模型别名已删除"
+                        })
+                      }
                       aria-label={`删除模型别名 ${alias.alias}`}
                       title="删除"
                       type="button"
@@ -1096,7 +1543,11 @@ function ModelsView({ config, modelAliases, runAction }) {
           </tbody>
         </table>
       </div>
-      {modelAliases.length === 0 ? <EmptyState title="暂无模型别名" body="创建公开模型名后，/v1/models 会优先暴露这些别名。" /> : null}
+      {modelAliases.length === 0 ? (
+        <EmptyState title="暂无模型别名" body="创建公开模型名后，/v1/models 会优先暴露这些别名。" />
+      ) : filteredAliases.length === 0 ? (
+        <EmptyState title="没有匹配的模型" body="尝试清空搜索或换一个关键字。" />
+      ) : null}
     </section>
     </div>
   );
@@ -1104,7 +1555,7 @@ function ModelsView({ config, modelAliases, runAction }) {
 
 function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave }) {
   const originalName = subscription.name || "";
-  const [form, setForm] = useState({
+  const initialForm = useMemo(() => ({
     name: subscription.name || "",
     provider: subscription.provider || "gemini",
     apiKey: "",
@@ -1118,10 +1569,36 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
     website: subscription.website || "",
     notes: subscription.notes || "",
     timeoutMs: subscription.timeoutMs || 0
-  });
+  }), [subscription]);
+  const [form, setForm] = useState(initialForm);
   const [status, setStatus] = useState({ type: "", message: "" });
   const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
   const selectedProvider = providers.find((item) => item.value === form.provider) || providers[0];
+  const dirty = useMemo(() => isFormDirty(form, initialForm), [form, initialForm]);
+
+  const requestClose = useCallback(() => {
+    if (testing || saving) {
+      return;
+    }
+    if (dirty) {
+      setConfirmingClose(true);
+      return;
+    }
+    onClose();
+  }, [testing, saving, dirty, onClose]);
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape" && !testing && !saving) {
+        event.preventDefault();
+        requestClose();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [requestClose, testing, saving]);
 
   function setField(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -1139,7 +1616,7 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
     setStatus({ type: "", message: "" });
   }
 
-  function save() {
+  async function save() {
     const validation = validateSubscriptionForm(form, {
       allowExistingSecret: Boolean(originalName),
       originalName,
@@ -1149,7 +1626,15 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
       setStatus({ type: "error", message: validation });
       return;
     }
-    onSave({ ...normalizeSubscriptionForm(form), originalName });
+    setSaving(true);
+    setStatus({ type: "", message: "" });
+    try {
+      await onSave({ ...normalizeSubscriptionForm(form), originalName });
+      // dialog will be unmounted by parent on success; nothing to do here
+    } catch (error) {
+      setStatus({ type: "error", message: error.message || String(error) });
+      setSaving(false);
+    }
   }
 
   async function fetchModelsFromForm() {
@@ -1236,17 +1721,28 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
   }
 
   return (
-    <div className="modal-backdrop" role="presentation">
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          requestClose();
+        }
+      }}
+      role="presentation"
+    >
       <section className="modal subscription-modal" role="dialog" aria-modal="true" aria-label="订阅编辑器">
         <div className="modal-header subscription-modal-header">
           <div>
             <div className="modal-kicker">Provider</div>
-            <h2>{subscription.name ? "编辑订阅" : "新增订阅"}</h2>
+            <h2>
+              {subscription.name ? "编辑订阅" : "新增订阅"}
+              {dirty ? <span className="dirty-dot" title="存在未保存修改" aria-label="未保存"></span> : null}
+            </h2>
             <p>选择供应商类型，配置 API 凭据、模型列表、用量查询和路由策略。</p>
           </div>
           <ProviderBadge provider={form.provider} />
-          <button className="icon-button" onClick={onClose} aria-label="关闭订阅编辑器" title="关闭" type="button">
-            <XCircle size={18} />
+          <button className="icon-button" onClick={requestClose} aria-label="关闭订阅编辑器" title="关闭" type="button">
+            <X size={18} />
           </button>
         </div>
         <form
@@ -1291,7 +1787,7 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
                 </div>
                 <div className="form-grid compact">
                   <Field label="名称">
-                    <input autoComplete="off" value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder={`${form.provider}-main`} />
+                    <input autoComplete="off" autoFocus value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder={`${form.provider}-main`} />
                   </Field>
                   <Field label="Provider">
                     <select value={form.provider} onChange={(event) => setField("provider", event.target.value)}>
@@ -1382,16 +1878,51 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
             </div>
           </div>
           <div className="modal-actions">
-            <button className="secondary-button" onClick={onClose} type="button">取消</button>
-            <button className="primary-button" type="submit">
-              <Save size={16} />
-              保存
+            {dirty ? <span className="modal-actions-hint">存在未保存的修改</span> : null}
+            <button className="secondary-button" onClick={requestClose} type="button" disabled={saving}>取消</button>
+            <button className="primary-button" type="submit" disabled={saving || testing}>
+              {saving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+              {saving ? "保存中…" : "保存"}
             </button>
           </div>
         </form>
       </section>
+      {confirmingClose ? (
+        <ConfirmDialog
+          confirm={{
+            title: "放弃未保存的修改？",
+            body: "当前订阅有未保存的修改。关闭后将丢失这些改动，确认继续？",
+            confirmLabel: "放弃修改",
+            cancelLabel: "返回编辑",
+            tone: "danger"
+          }}
+          onCancel={() => setConfirmingClose(false)}
+          onConfirm={() => {
+            setConfirmingClose(false);
+            onClose();
+          }}
+        />
+      ) : null}
     </div>
   );
+}
+
+function isFormDirty(current, initial) {
+  if (!initial) {
+    return false;
+  }
+  for (const key of Object.keys(initial)) {
+    if (key === "apiKey") {
+      if ((current.apiKey || "").trim() !== "") {
+        return true;
+      }
+      continue;
+    }
+    if ((current[key] ?? "") !== (initial[key] ?? "")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function normalizeSubscriptionForm(form) {
@@ -1472,7 +2003,7 @@ function ChatView({ config, runAction }) {
   const [sending, setSending] = useState(false);
 
   async function send() {
-    if (!prompt.trim()) {
+    if (!prompt.trim() || sending) {
       return;
     }
     setSending(true);
@@ -1486,6 +2017,8 @@ function ChatView({ config, runAction }) {
         })
       );
       setResult(response);
+    } catch {
+      // runAction already shows the toast
     } finally {
       setSending(false);
     }
@@ -1523,13 +2056,35 @@ function ChatView({ config, runAction }) {
             </datalist>
           </Field>
         </div>
-        <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="通过聚合路由发送测试消息" />
+        <textarea
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              send();
+            }
+          }}
+          placeholder="通过聚合路由发送测试消息"
+          aria-label="对话内容"
+        />
+        <div className="chat-hint">
+          <span>支持 <kbd>{getMetaKeyLabel()}</kbd><span className="shortcut-plus">+</span><kbd>Enter</kbd> 发送</span>
+          <span className="muted">{prompt.length} 字符</span>
+        </div>
         <div className="button-row">
           <button className="primary-button" disabled={sending || !prompt.trim()} onClick={send} type="button">
             {sending ? <Loader2 className="spin" size={16} /> : <Bot size={16} />}
-            发送
+            {sending ? "发送中…" : "发送"}
           </button>
-          <button className="secondary-button" onClick={() => setPrompt("")} type="button">清空</button>
+          <button
+            className="secondary-button"
+            onClick={() => { setPrompt(""); setResult(null); }}
+            disabled={sending || (!prompt && !result)}
+            type="button"
+          >
+            清空
+          </button>
         </div>
       </section>
 
@@ -1565,16 +2120,23 @@ function HistoryView({ history, refreshAll }) {
 
   return (
     <div className="stack">
-      <section className="panel toolbar-panel">
-        <div className="search-box">
-          <Search size={16} />
-          <input value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="筛选请求历史" placeholder="筛选历史" />
-        </div>
-        <button className="secondary-button" onClick={refreshAll} type="button">
-          <RefreshCw size={16} />
-          刷新
-        </button>
-      </section>
+      <SearchBar
+        value={filter}
+        onChange={setFilter}
+        ariaLabel="筛选请求历史"
+        placeholder="筛选时间、订阅、模型或错误…"
+        matchLabel={
+          <>
+            共 <strong>{rows.length}</strong> 条
+          </>
+        }
+        rightSlot={
+          <button className="secondary-button" onClick={refreshAll} type="button">
+            <RefreshCw size={16} />
+            刷新
+          </button>
+        }
+      />
       <section className="table-panel">
         <div className="table-wrapper">
           <table>
@@ -1618,47 +2180,114 @@ function HistoryView({ history, refreshAll }) {
 
 function LogsView({ logs, refreshAll }) {
   const [filter, setFilter] = useState("");
+  const [autoRefresh, setAutoRefresh] = useState(false);
   const filtered = logs.filter((line) => line.toLowerCase().includes(filter.toLowerCase()));
+  const preRef = useRef(null);
+
+  useEffect(() => {
+    if (!autoRefresh) {
+      return undefined;
+    }
+    const handle = window.setInterval(() => {
+      refreshAll();
+    }, 4000);
+    return () => window.clearInterval(handle);
+  }, [autoRefresh, refreshAll]);
+
+  useEffect(() => {
+    if (preRef.current) {
+      preRef.current.scrollTop = preRef.current.scrollHeight;
+    }
+  }, [logs]);
+
   return (
     <div className="stack">
-      <section className="panel toolbar-panel">
-        <div className="search-box">
-          <Search size={16} />
-          <input value={filter} onChange={(event) => setFilter(event.target.value)} aria-label="筛选运行日志" placeholder="筛选日志" />
-        </div>
-        <button className="secondary-button" onClick={refreshAll} type="button">
-          <RefreshCw size={16} />
-          刷新
-        </button>
-      </section>
+      <SearchBar
+        value={filter}
+        onChange={setFilter}
+        ariaLabel="筛选运行日志"
+        placeholder="筛选关键字…"
+        matchLabel={
+          <>
+            匹配 <strong>{filtered.length}</strong> 行
+          </>
+        }
+        rightSlot={
+          <>
+            <button
+              className={`secondary-button ${autoRefresh ? "is-active" : ""}`}
+              onClick={() => setAutoRefresh((current) => !current)}
+              aria-pressed={autoRefresh}
+              type="button"
+              title="每 4 秒自动刷新一次日志"
+            >
+              {autoRefresh ? <Pause size={16} /> : <Play size={16} />}
+              {autoRefresh ? "停止跟随" : "实时跟随"}
+            </button>
+            <button className="secondary-button" onClick={refreshAll} type="button">
+              <RefreshCw size={16} />
+              刷新
+            </button>
+          </>
+        }
+      />
       <section className="panel terminal-panel">
-        {filtered.length > 0 ? <pre>{filtered.join("\n")}</pre> : <EmptyState title="暂无日志" body="启动、停止服务或发生异常时会生成日志。" />}
+        {filtered.length > 0 ? (
+          <pre ref={preRef}>{filtered.join("\n")}</pre>
+        ) : (
+          <EmptyState title="暂无日志" body="启动、停止服务或发生异常时会生成日志。" />
+        )}
       </section>
     </div>
   );
 }
 
-function ImportExportView({ migration, runAction }) {
+function ImportExportView({ migration, runAction, runConfirmed, copyText }) {
   const [includeProviderKeys, setIncludeProviderKeys] = useState(false);
   const [exportText, setExportText] = useState("");
   const [importText, setImportText] = useState("");
+  const [importError, setImportError] = useState("");
 
   async function exportData() {
+    if (includeProviderKeys) {
+      runConfirmed({
+        title: "生成完整本机备份",
+        body: "导出内容将包含 provider API Key。仅在受信任的本机环境中保存或传输，避免上传到共享空间。",
+        confirmLabel: "生成完整备份",
+        action: () => bridge.exportStore({ includeProviderKeys }),
+        successMessage: "已生成完整本机备份",
+        onResolved: (payload) => setExportText(JSON.stringify(payload, null, 2))
+      });
+      return;
+    }
     const payload = await runAction(
       () => bridge.exportStore({ includeProviderKeys }),
-      includeProviderKeys ? "已生成完整本机备份" : "已生成脱敏导出"
+      "已生成脱敏导出"
     );
     setExportText(JSON.stringify(payload, null, 2));
   }
 
   async function importData() {
-    const payload = JSON.parse(importText);
-    await runAction(() => bridge.importStore(payload), "导入完成");
-    setImportText("");
+    let payload;
+    try {
+      payload = JSON.parse(importText);
+    } catch {
+      setImportError("JSON 格式无效，请检查后再导入。");
+      return;
+    }
+    setImportError("");
+    runConfirmed({
+      title: "导入配置数据",
+      body: "导入会写入订阅、模型别名和平台 Key 元数据。请确认 JSON 来源可信，并已备份当前配置。",
+      confirmLabel: "导入",
+      action: () => bridge.importStore(payload),
+      successMessage: "导入完成",
+      onResolved: () => setImportText("")
+    });
   }
 
   return (
-    <div className="stack">
+    <div className="stack import-export-view">
       <section className="metrics-grid">
         <Metric label="SQLite 状态" value={migration?.initialized ? "已初始化" : "未初始化"} icon={Database} tone={migration?.initialized ? "good" : "warn"} />
         <Metric label="订阅" value={migration?.subscriptions || 0} icon={KeyRound} />
@@ -1679,7 +2308,7 @@ function ImportExportView({ migration, runAction }) {
               <Database size={16} />
               生成导出
             </button>
-            <button className="secondary-button" disabled={!exportText} onClick={() => navigator.clipboard?.writeText(exportText)} type="button">
+            <button className="secondary-button" disabled={!exportText} onClick={() => copyText(exportText, "导出 JSON 已复制")} type="button">
               <Clipboard size={16} />
               复制
             </button>
@@ -1690,13 +2319,22 @@ function ImportExportView({ migration, runAction }) {
         <div className="panel">
           <h2>导入</h2>
           <p className="muted">粘贴 AiHub 导出的 JSON。脱敏订阅不会覆盖已有 API Key，平台 Key 元数据会以禁用状态导入。</p>
-          <textarea className="json-area" value={importText} onChange={(event) => setImportText(event.target.value)} placeholder="{ ... }" />
+          <textarea
+            className="json-area"
+            value={importText}
+            onChange={(event) => {
+              setImportText(event.target.value);
+              setImportError("");
+            }}
+            placeholder="{ ... }"
+          />
+          {importError ? <div className="dialog-status error">{importError}</div> : null}
           <div className="button-row">
             <button className="primary-button" disabled={!importText.trim()} onClick={importData} type="button">
               <Save size={16} />
               导入
             </button>
-            <button className="secondary-button" onClick={() => setImportText("")} type="button">清空</button>
+            <button className="secondary-button" onClick={() => { setImportText(""); setImportError(""); }} type="button">清空</button>
           </div>
         </div>
       </section>
@@ -1807,6 +2445,64 @@ function Metric({ label, value, icon: Icon, tone = "neutral" }) {
   );
 }
 
+function SearchBar({
+  value,
+  onChange,
+  placeholder = "搜索…",
+  ariaLabel,
+  matchLabel,
+  registerForShortcut = true,
+  rightSlot
+}) {
+  const inputRef = useRef(null);
+  const focusRegistry = React.useContext(SearchFocusContext);
+
+  useEffect(() => {
+    if (!registerForShortcut || !focusRegistry) {
+      return undefined;
+    }
+    const previous = focusRegistry.current;
+    focusRegistry.current = () => {
+      const node = inputRef.current;
+      if (node) {
+        node.focus();
+        node.select?.();
+      }
+    };
+    return () => {
+      focusRegistry.current = previous || null;
+    };
+  }, [registerForShortcut, focusRegistry]);
+
+  return (
+    <section className="search-bar" role="search">
+      <div className="search-box">
+        <Search size={14} />
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          aria-label={ariaLabel || placeholder}
+          placeholder={placeholder}
+        />
+        {value ? (
+          <button
+            className="search-clear"
+            onClick={() => onChange("")}
+            aria-label="清除搜索"
+            title="清除搜索"
+            type="button"
+          >
+            <X size={14} />
+          </button>
+        ) : null}
+      </div>
+      {matchLabel ? <span className="search-meta">{matchLabel}</span> : null}
+      {rightSlot}
+    </section>
+  );
+}
+
 function Field({ label, children }) {
   return (
     <label className="field">
@@ -1830,13 +2526,12 @@ function ProviderBadge({ provider }) {
   return <span className={`provider-badge ${provider}`}>{label}</span>;
 }
 
-function ModelChips({ models = [] }) {
-  const visible = models.slice(0, 3);
+function ProviderMark({ provider, size = 16 }) {
+  const initial = provider === "openai-compatible" ? "O" : (provider || "?").charAt(0).toUpperCase();
   return (
-    <div className="model-chip-list" title={models.join("\n")}>
-      {visible.length > 0 ? visible.map((model) => <span key={model}>{model}</span>) : <code>-</code>}
-      {models.length > visible.length ? <span>+{models.length - visible.length}</span> : null}
-    </div>
+    <span className={`provider-mark ${provider || "default"}`} style={{ fontSize: Math.round(size * 0.62) }} aria-hidden>
+      {initial}
+    </span>
   );
 }
 
@@ -1865,14 +2560,204 @@ function StatusLabel({ ok, text }) {
   return <span className={`status-label ${ok ? "ok" : "fail"}`}>{text}</span>;
 }
 
-function MessageStrip({ notice, error, busy }) {
-  if (!notice && !error && !busy) {
+function ToastStack({ toasts, onDismiss, busy }) {
+  return (
+    <div className="toast-stack" role="region" aria-live="polite" aria-label="通知">
+      {busy ? (
+        <div className="toast toast-busy" role="status">
+          <Loader2 className="spin" size={14} />
+          <span>处理中…</span>
+        </div>
+      ) : null}
+      {toasts.map((toast) => (
+        <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
+      ))}
+    </div>
+  );
+}
+
+function ToastItem({ toast, onDismiss }) {
+  const Icon = toast.tone === "error" ? XCircle : toast.tone === "warning" ? AlertTriangle : toast.tone === "info" ? Info : CheckCircle2;
+  return (
+    <div
+      className={`toast toast-${toast.tone}`}
+      role={toast.tone === "error" ? "alert" : "status"}
+      aria-live={toast.tone === "error" ? "assertive" : "polite"}
+    >
+      <Icon className="toast-icon" size={15} />
+      <div className="toast-body">
+        {toast.title ? <strong>{toast.title}</strong> : null}
+        <span>{toast.message}</span>
+      </div>
+      <button
+        className="toast-close"
+        onClick={() => onDismiss(toast.id)}
+        aria-label="关闭通知"
+        type="button"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
+
+function ShortcutsDialog({ open, onClose }) {
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose]);
+
+  if (!open) {
     return null;
   }
+  const meta = getMetaKeyLabel();
+  const groups = [
+    {
+      title: "全局",
+      items: [
+        { keys: [meta, "K"], label: "聚焦当前页搜索" },
+        { keys: [meta, "R"], label: "刷新全部数据" },
+        { keys: ["?"], label: "切换快捷键面板" },
+        { keys: ["Esc"], label: "关闭弹窗或对话框" }
+      ]
+    },
+    {
+      title: "切换视图",
+      items: navItems.slice(0, 9).map((item, index) => ({
+        keys: [meta, String(index + 1)],
+        label: item.label
+      }))
+    }
+  ];
+
   return (
-    <div className={`message-strip ${error ? "error" : ""}`} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>
-      {busy ? <Loader2 className="spin" size={16} /> : error ? <XCircle size={16} /> : <CheckCircle2 size={16} />}
-      <span>{error || notice || "处理中"}</span>
+    <div
+      className="modal-backdrop confirm-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+      role="presentation"
+    >
+      <section className="modal shortcuts-modal" role="dialog" aria-modal="true" aria-label="键盘快捷键">
+        <div className="modal-header shortcuts-modal-header">
+          <div>
+            <div className="modal-kicker">Shortcuts</div>
+            <h2>键盘快捷键</h2>
+            <p>这些组合键在桌面端任何视图都可用，让操作更快。</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭快捷键面板" title="关闭" type="button">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="shortcuts-body">
+          {groups.map((group) => (
+            <section className="shortcut-group" key={group.title}>
+              <h3>{group.title}</h3>
+              <ul>
+                {group.items.map((entry) => (
+                  <li key={entry.label}>
+                    <span>{entry.label}</span>
+                    <span className="shortcut-keys">
+                      {entry.keys.map((key, index) => (
+                        <React.Fragment key={`${key}-${index}`}>
+                          {index > 0 ? <span className="shortcut-plus">+</span> : null}
+                          <kbd>{key}</kbd>
+                        </React.Fragment>
+                      ))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ConfirmDialog({ confirm, onCancel, onConfirm }) {
+  useEffect(() => {
+    if (!confirm) {
+      return undefined;
+    }
+    const previousFocus = document.activeElement;
+    const tone = confirm.tone || "danger";
+    const focusFrame = window.requestAnimationFrame(() => {
+      const focusTarget = tone === "danger"
+        ? document.querySelector("[data-confirm-cancel]")
+        : document.querySelector("[data-confirm-primary]");
+      focusTarget?.focus();
+    });
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancel();
+        return;
+      }
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        onConfirm();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocus?.focus?.();
+    };
+  }, [confirm, onCancel, onConfirm]);
+
+  if (!confirm) {
+    return null;
+  }
+  const tone = confirm.tone || "danger";
+  return (
+    <div
+      className="modal-backdrop confirm-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onCancel();
+        }
+      }}
+      role="presentation"
+    >
+      <section className={`modal confirm-modal ${tone}`} role="dialog" aria-modal="true" aria-label={confirm.title}>
+        <div className="confirm-icon">
+          {tone === "danger" ? <AlertTriangle size={20} /> : <CheckCircle2 size={20} />}
+        </div>
+        <div className="confirm-content">
+          <div className="modal-kicker">人工复核</div>
+          <h2>{confirm.title}</h2>
+          <p>{confirm.body}</p>
+          {tone === "danger" ? (
+            <p className="confirm-hint">
+              <kbd>Esc</kbd> 取消 · <kbd>{getMetaKeyLabel()}</kbd>
+              <span className="shortcut-plus">+</span>
+              <kbd>Enter</kbd> 确认
+            </p>
+          ) : null}
+        </div>
+        <div className="confirm-actions">
+          <button className="secondary-button" data-confirm-cancel onClick={onCancel} type="button">
+            {confirm.cancelLabel || "取消"}
+          </button>
+          <button className={tone === "danger" ? "danger-button solid" : "primary-button"} data-confirm-primary onClick={onConfirm} type="button">
+            {confirm.confirmLabel || "确认"}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -2005,6 +2890,52 @@ function allConfiguredModels(config = {}) {
     values.push(subscription.model, ...(subscription.models || []));
   }
   return [...new Set(values.filter(Boolean))].sort();
+}
+
+function getMetaKeyLabel() {
+  if (typeof window === "undefined") {
+    return "Ctrl";
+  }
+  const platform = window.navigator?.platform || "";
+  return /Mac|iPhone|iPad/.test(platform) ? "⌘" : "Ctrl";
+}
+
+function toggleThemeWithReveal(buttonEl, currentTheme, setTheme) {
+  const nextTheme = currentTheme === "dark" ? "light" : "dark";
+  const reduceMotion = typeof window !== "undefined"
+    && window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const supportsViewTransition = typeof document !== "undefined"
+    && typeof document.startViewTransition === "function";
+
+  if (reduceMotion || !supportsViewTransition || !buttonEl) {
+    setTheme(nextTheme);
+    return;
+  }
+
+  const rect = buttonEl.getBoundingClientRect();
+  const originX = rect.left + rect.width / 2;
+  const originY = rect.top + rect.height / 2;
+  const farthestCorner = Math.hypot(
+    Math.max(originX, window.innerWidth - originX),
+    Math.max(originY, window.innerHeight - originY)
+  );
+
+  const root = document.documentElement;
+  root.style.setProperty("--theme-toggle-x", `${originX}px`);
+  root.style.setProperty("--theme-toggle-y", `${originY}px`);
+  root.style.setProperty("--theme-toggle-radius", `${farthestCorner}px`);
+  root.dataset.themeTransition = nextTheme === "dark" ? "to-dark" : "to-light";
+
+  const transition = document.startViewTransition(() => {
+    setTheme(nextTheme);
+  });
+  transition.finished.finally(() => {
+    delete root.dataset.themeTransition;
+    root.style.removeProperty("--theme-toggle-x");
+    root.style.removeProperty("--theme-toggle-y");
+    root.style.removeProperty("--theme-toggle-radius");
+  });
 }
 
 function getInitialTheme() {
