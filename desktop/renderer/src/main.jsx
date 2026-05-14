@@ -60,13 +60,6 @@ const navItems = [
   { id: "settings", label: "设置", icon: Settings }
 ];
 
-const topModeItems = [
-  { id: "dashboard", label: "总览", icon: LayoutDashboard },
-  { id: "subscriptions", label: "订阅池", icon: KeyRound },
-  { id: "platformKeys", label: "平台 Key", icon: Clipboard },
-  { id: "models", label: "模型", icon: SlidersHorizontal }
-];
-
 const THEME_STORAGE_KEY = "aihub-theme";
 const BROWSER_BRIDGE_STORAGE_KEY = "aihub-browser-bridge-state";
 const defaultBridge = createBrowserBridge();
@@ -159,18 +152,13 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="titlebar-drag" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
         <div className="brand">
           <div className="brand-mark">
             <Bot size={18} />
           </div>
           <div>
             <div className="brand-title">AiHub</div>
-            <div className="brand-subtitle">Local Client</div>
+            <div className="brand-subtitle">Local Gateway</div>
           </div>
         </div>
 
@@ -183,10 +171,9 @@ function App() {
                 key={item.id}
                 onClick={() => setActiveView(item.id)}
                 aria-current={activeView === item.id ? "page" : undefined}
-                title={item.label}
                 type="button"
               >
-                <Icon size={18} />
+                <Icon size={16} />
                 <span>{item.label}</span>
               </button>
             );
@@ -195,7 +182,7 @@ function App() {
 
         <div className="sidebar-footer">
           <StatusPill running={service?.running} />
-          <code>{service?.baseUrl || "http://127.0.0.1:8787/v1"}</code>
+          <code title={service?.baseUrl || ""}>{service?.baseUrl || "http://127.0.0.1:8787/v1"}</code>
         </div>
       </aside>
 
@@ -205,24 +192,6 @@ function App() {
             <h1>{navItems.find((item) => item.id === activeView)?.label}</h1>
             <p>{viewSubtitle(activeView)}</p>
           </div>
-          <div className="client-segmented" role="tablist" aria-label="常用工作区">
-            {topModeItems.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  className={`top-mode-button ${activeView === item.id ? "active" : ""}`}
-                  key={item.id}
-                  onClick={() => setActiveView(item.id)}
-                  role="tab"
-                  aria-selected={activeView === item.id}
-                  type="button"
-                >
-                  <Icon size={15} />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
           <div className="topbar-actions">
             <button
               className="icon-button theme-toggle"
@@ -231,19 +200,19 @@ function App() {
               title={theme === "dark" ? "切换浅色模式" : "切换深色模式"}
               type="button"
             >
-              {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
             </button>
             <button className="icon-button" onClick={() => runAction(refreshAll)} aria-label="刷新全部状态" title="刷新" type="button">
-              <RefreshCw size={17} />
+              <RefreshCw size={16} />
             </button>
             {service?.running ? (
               <button className="danger-button" onClick={() => runAction(() => bridge.stopService(), "服务已停止")} type="button">
-                <Square size={16} />
+                <Square size={14} />
                 停止
               </button>
             ) : (
               <button className="primary-button" onClick={() => runAction(() => bridge.startService(), "服务已启动")} type="button">
-                <Play size={16} />
+                <Play size={14} />
                 启动
               </button>
             )}
@@ -386,9 +355,9 @@ function DashboardView({ config, service, enabledSubscriptions, history, logs, u
 
   return (
     <div className="stack">
-      <section className="client-control-grid">
-        <div className="client-control-card">
-          <div className="control-card-head">
+      <section className="service-hero">
+        <div className="service-hero-card">
+          <div className="service-hero-head">
             <div>
               <p className="eyebrow">Local Gateway</p>
               <h2>{service.running ? "网关正在接管本机 AI 请求" : "网关待启动"}</h2>
@@ -402,40 +371,40 @@ function DashboardView({ config, service, enabledSubscriptions, history, logs, u
               <code>{service.baseUrl}</code>
             </div>
             <button className="icon-button" onClick={() => navigator.clipboard?.writeText(service.baseUrl)} aria-label="复制 Base URL" title="复制 Base URL" type="button">
-              <Clipboard size={16} />
+              <Clipboard size={15} />
             </button>
           </div>
-          <div className="control-card-actions">
+          <div className="service-hero-actions">
             {service.running ? (
               <button className="danger-button" onClick={() => runAction(() => bridge.stopService(), "服务已停止")} type="button">
-                <Square size={16} />
+                <Square size={14} />
                 停止网关
               </button>
             ) : (
               <button className="primary-button" onClick={() => runAction(() => bridge.startService(), "服务已启动")} type="button">
-                <Play size={16} />
+                <Play size={14} />
                 启动网关
               </button>
             )}
             <button className="secondary-button" onClick={() => setActiveView("chat")} type="button">
-              <MessageSquareText size={16} />
+              <MessageSquareText size={14} />
               对话测试
             </button>
             <button className="secondary-button" onClick={() => setActiveView("settings")} type="button">
-              <Settings size={16} />
+              <Settings size={14} />
               策略设置
             </button>
           </div>
         </div>
 
-        <div className="client-switch-card">
-          <div className="control-card-head compact">
+        <div className="provider-rail">
+          <div className="provider-rail-head">
             <div>
               <p className="eyebrow">Provider Switch</p>
               <h2>订阅切换池</h2>
             </div>
             <button className="secondary-button" onClick={() => setActiveView("subscriptions")} type="button">
-              <KeyRound size={16} />
+              <KeyRound size={14} />
               管理
             </button>
           </div>
@@ -476,36 +445,6 @@ function DashboardView({ config, service, enabledSubscriptions, history, logs, u
         <Metric label="启用平台 Key" value={(platformKeys || []).filter((key) => key.enabled).length} icon={Clipboard} />
         <Metric label="公开模型" value={(modelAliases || []).filter((alias) => alias.enabled).length} icon={SlidersHorizontal} />
         <Metric label="总 Token" value={formatNumber(usage.total.totalTokens)} icon={Activity} />
-      </section>
-
-      <section className="panel split-panel">
-        <div>
-          <h2><Terminal size={18} /> 本地 API</h2>
-          <p className="muted">把这个 Base URL 配给兼容 OpenAI API 的 CLI 或工具。</p>
-          <div className="copy-row">
-            <code>{service.baseUrl}</code>
-            <button className="icon-button" onClick={() => navigator.clipboard?.writeText(service.baseUrl)} aria-label="复制 Base URL" title="复制 Base URL" type="button">
-              <Clipboard size={16} />
-            </button>
-          </div>
-        </div>
-        <div className="button-row">
-          {service.running ? (
-            <button className="danger-button" onClick={() => runAction(() => bridge.stopService(), "服务已停止")} type="button">
-              <Square size={16} />
-              停止服务
-            </button>
-          ) : (
-            <button className="primary-button" onClick={() => runAction(() => bridge.startService(), "服务已启动")} type="button">
-              <Play size={16} />
-              启动服务
-            </button>
-          )}
-          <button className="secondary-button" onClick={() => setActiveView("settings")} type="button">
-            <Settings size={16} />
-            设置
-          </button>
-        </div>
       </section>
 
       <section className="metrics-grid">
@@ -649,53 +588,31 @@ function SubscriptionsView({ config, usage, runAction, providerUsage, setProvide
         ))}
       </section>
 
-      {grouped.map((group) => (
-        <section className="table-panel provider-section" key={group.value}>
-          <div className="provider-section-header">
-            <div>
-              <h2>{group.label}</h2>
-              <p className="muted">{group.items.length} 个订阅，{group.items.reduce((sum, item) => sum + (item.models?.length || (item.model ? 1 : 0)), 0)} 个模型</p>
+      {grouped.map((group) => {
+        const groupModels = group.items.reduce((sum, item) => sum + (item.models?.length || (item.model ? 1 : 0)), 0);
+        return (
+          <section className="subscription-section" key={group.value}>
+            <div className="subscription-section-head">
+              <div>
+                <h2>{group.label}</h2>
+                <p className="muted">{group.items.length} 个订阅 · {groupModels} 个模型</p>
+              </div>
+              <ProviderBadge provider={group.value} />
             </div>
-            <ProviderBadge provider={group.value} />
-          </div>
-          <div className="table-wrapper">
-            <table className="subscription-table">
-            <thead>
-              <tr>
-                <th>优先级</th>
-                <th>状态</th>
-                <th>订阅</th>
-                <th>默认模型</th>
-                <th>支持模型</th>
-                <th>请求</th>
-                <th>Token</th>
-                <th>缓存</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
+            <div className="subscription-grid">
               {group.items.map((subscription) => {
                 const stats = usageByName.get(subscription.name) || emptyUsageBucket(subscription);
                 return (
-                  <tr key={subscription.name}>
-                    <td>
-                      <input
-                        className="priority-input"
-                        type="number"
-                        value={subscription.priority}
-                        aria-label={`设置 ${subscription.name} 的优先级`}
-                        onChange={(event) =>
-                          runAction(() =>
-                            bridge.setSubscriptionPriority({
-                              name: subscription.name,
-                              priority: Number(event.target.value)
-                            })
-                          )
-                        }
-                      />
-                    </td>
-                    <td>
-                      <label className="switch">
+                  <article
+                    className={`subscription-card ${subscription.enabled ? "active" : "disabled"}`}
+                    key={subscription.name}
+                  >
+                    <header className="subscription-card-head">
+                      <div className="subscription-card-head-main">
+                        <ProviderBadge provider={subscription.provider} />
+                        <div className="subscription-card-title" title={subscription.name}>{subscription.name}</div>
+                      </div>
+                      <label className="switch" title={subscription.enabled ? "停用此订阅" : "启用此订阅"}>
                         <input
                           checked={subscription.enabled}
                           type="checkbox"
@@ -711,32 +628,58 @@ function SubscriptionsView({ config, usage, runAction, providerUsage, setProvide
                         />
                         <span />
                       </label>
-                    </td>
-                    <td>
-                      <div className="subscription-name-cell">
-                        <div className="strong truncate">{subscription.name}</div>
-                        <div className="subscription-meta-icons">
-                          {subscription.website ? (
-                            <a href={subscription.website} target="_blank" rel="noreferrer" title={`访问官网: ${subscription.website}`} className="meta-icon-link">
-                              <Wifi size={12} />
-                            </a>
-                          ) : null}
-                          {subscription.notes ? (
-                            <span title={subscription.notes} className="meta-icon-note">
-                              <FileText size={12} />
-                            </span>
-                          ) : null}
-                        </div>
+                    </header>
+
+                    <div className="subscription-card-body">
+                      <div className="subscription-card-meta">
+                        <code>{subscription.model || "-"}</code>
+                        {subscription.website ? (
+                          <a href={subscription.website} target="_blank" rel="noreferrer" title={`访问官网: ${subscription.website}`} className="inline-icon">
+                            <Wifi size={12} />
+                          </a>
+                        ) : null}
+                        {subscription.notes ? (
+                          <span title={subscription.notes} className="inline-icon">
+                            <FileText size={12} />
+                          </span>
+                        ) : null}
                       </div>
-                      <div className="muted">成功率 {formatPercent(stats.successRate)}</div>
+                      <ModelChips models={subscription.models || (subscription.model ? [subscription.model] : [])} />
                       <ProviderUsageMini usage={providerUsage[subscription.name]} />
-                    </td>
-                    <td><code>{subscription.model || "-"}</code></td>
-                    <td><ModelChips models={subscription.models || (subscription.model ? [subscription.model] : [])} /></td>
-                    <td>{formatNumber(stats.requests)}</td>
-                    <td>{formatNumber(stats.totalTokens)}</td>
-                    <td>{formatPercent(stats.cacheHitRate)}</td>
-                    <td>
+                    </div>
+
+                    <div className="subscription-card-stats">
+                      <div>
+                        <span>请求</span>
+                        <strong>{formatNumber(stats.requests)}</strong>
+                      </div>
+                      <div>
+                        <span>Token</span>
+                        <strong>{formatNumber(stats.totalTokens)}</strong>
+                      </div>
+                      <div>
+                        <span>缓存</span>
+                        <strong>{formatPercent(stats.cacheHitRate)}</strong>
+                      </div>
+                    </div>
+
+                    <footer className="subscription-card-foot">
+                      <label className="subscription-priority" title="路由优先级（数字越小越优先）">
+                        <span>优先级</span>
+                        <input
+                          type="number"
+                          value={subscription.priority}
+                          aria-label={`设置 ${subscription.name} 的优先级`}
+                          onChange={(event) =>
+                            runAction(() =>
+                              bridge.setSubscriptionPriority({
+                                name: subscription.name,
+                                priority: Number(event.target.value)
+                              })
+                            )
+                          }
+                        />
+                      </label>
                       <div className="row-actions">
                         <button
                           className="icon-button"
@@ -769,15 +712,14 @@ function SubscriptionsView({ config, usage, runAction, providerUsage, setProvide
                           <Trash2 size={15} />
                         </button>
                       </div>
-                    </td>
-                  </tr>
+                    </footer>
+                  </article>
                 );
               })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      ))}
+            </div>
+          </section>
+        );
+      })}
       {subscriptions.length === 0 ? <section className="panel"><EmptyState title="没有匹配的订阅" body="新增 Gemini、Claude 或 Codex 订阅后即可开始路由。" /></section> : null}
 
       {editing ? (
