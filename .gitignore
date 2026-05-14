@@ -9,3 +9,5 @@ qa-artifacts/
 release/
 build/icon.iconset/
 build/ico/
+build/electron-cache/
+build/electron-builder-cache/

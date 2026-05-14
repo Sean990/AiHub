@@ -53,6 +53,8 @@ npm run dist
 npm run pack
 ```
 
+`npm run pack` 使用项目内 Electron 缓存目录，并跳过 Windows 可执行文件签名/资源编辑步骤，避免普通 Windows 用户在解压 `winCodeSign` 依赖时遇到符号链接权限限制。生成的本地验证产物位于 `release/win-unpacked/`。
+
 macOS：
 
 ```bash
@@ -67,7 +69,7 @@ Windows：
 npm run dist:win
 ```
 
-产物会输出到 `release/`，包含 `AiHub-<version>-setup-x64.exe` 和 `AiHub-<version>-portable-x64.exe`，应用图标使用界面左上角的 AiHub 图标。在非 Windows 系统上交叉构建 Windows x64 包时，`electron-builder` 需要能下载所需的构建依赖。
+产物会输出到 `release/`，包含 `AiHub-<version>-setup-x64.exe` 和 `AiHub-<version>-portable-x64.exe`，应用图标使用界面左上角的 AiHub 图标。正式 Windows 安装包会保留可执行文件资源编辑流程；如果本机没有创建符号链接权限，请开启 Windows 开发者模式或使用管理员终端后再执行 `npm run dist:win`。
 
 添加订阅：
 

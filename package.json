@@ -2,6 +2,7 @@
   "name": "aihub",
   "version": "0.1.0",
   "description": "Local aggregate API and CLI router for Gemini, Claude, and Codex subscriptions.",
+  "author": "Sean990",
   "type": "module",
   "bin": {
     "aihub": "./bin/aihub.js"
@@ -13,10 +14,10 @@
     "desktop": "concurrently -k -s first -n vite,electron \"vite --config desktop/renderer/vite.config.js --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "desktop:build": "vite build --config desktop/renderer/vite.config.js",
     "icons:build": "node build/generate-icons.mjs",
-    "pack": "npm run desktop:build && electron-builder --dir --publish=never",
-    "dist": "npm run desktop:build && electron-builder --publish=never",
-    "dist:mac": "npm run desktop:build && electron-builder --mac --publish=never",
-    "dist:win": "npm run desktop:build && electron-builder --win --publish=never"
+    "pack": "npm run desktop:build && node build/run-electron-builder.mjs --dir --publish=never --config.win.signAndEditExecutable=false",
+    "dist": "npm run desktop:build && node build/run-electron-builder.mjs --publish=never",
+    "dist:mac": "npm run desktop:build && node build/run-electron-builder.mjs --mac --publish=never",
+    "dist:win": "npm run desktop:build && node build/run-electron-builder.mjs --win --publish=never"
   },
   "build": {
     "appId": "com.aihub.desktop",
@@ -24,6 +25,10 @@
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "icon": "build/icon.png",
     "asar": true,
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/",
+      "cache": "build/electron-cache"
+    },
     "directories": {
       "output": "release"
     },
