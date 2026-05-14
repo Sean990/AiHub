@@ -18,13 +18,15 @@
 
 | Role | Hex | CSS Variable |
 |------|-----|--------------|
-| Primary | `#1E293B` | `--color-primary` |
-| Secondary | `#334155` | `--color-secondary` |
-| CTA/Accent | `#22C55E` | `--color-cta` |
-| Background | `#0F172A` | `--color-background` |
-| Text | `#F8FAFC` | `--color-text` |
+| Primary | `#2563EB` | `--primary` |
+| Running | `#16A34A` | `--success` |
+| Warning | `#D97706` | `--warning` |
+| Danger | `#DC2626` | `--danger` |
+| Background | `#F3F6FA` | `--background` |
+| Surface | `#FFFFFF` | `--card` |
+| Text | `#0F172A` | `--foreground` |
 
-**Color Notes:** Code dark + run green
+**Color Notes:** Local AI route control console. Use neutral surfaces for dense data and reserve saturated color for active, running, selected, warning, and danger states.
 
 ### Typography
 
@@ -42,13 +44,27 @@
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `--space-xs` | `4px` / `0.25rem` | Tight gaps |
-| `--space-sm` | `8px` / `0.5rem` | Icon gaps, inline spacing |
-| `--space-md` | `16px` / `1rem` | Standard padding |
-| `--space-lg` | `24px` / `1.5rem` | Section padding |
-| `--space-xl` | `32px` / `2rem` | Large gaps |
-| `--space-2xl` | `48px` / `3rem` | Section margins |
-| `--space-3xl` | `64px` / `4rem` | Hero padding |
+| `--space-2xs` | `4px` | Micro offsets, label margins |
+| `--space-xs` | `6px` | Tight icon gaps |
+| `--space-sm` | `8px` | Standard touch-safe gaps |
+| `--space-md` | `12px` | Compact card/form padding |
+| `--space-lg` | `16px` | Panel padding and page gaps |
+| `--space-xl` | `20px` | Primary surface padding |
+| `--space-2xl` | `24px` | Desktop modal/page padding |
+| `--space-3xl` | `32px` | Scroll container bottom padding |
+| `--gap-page` | `20px` desktop, `16px` tablet, `12px` compact | Main section rhythm |
+| `--control-height` | `32px` | Buttons and icon buttons |
+| `--input-height` | `34px` | Inputs, selects, search fields |
+
+### Responsive Layout Rules
+
+- Desktop: sidebar `224px`, page padding `16-24px`, Dashboard hero uses two columns.
+- <=1280px: metrics compress from five columns to three; Dashboard hero stacks to one column.
+- <=1060px: two-column work areas, chat, and settings collapse to one column.
+- <=820px: sidebar collapses to `64px`, navigation labels hide, cards/forms/tables use one-column grids.
+- <=640px: topbar can grow vertically, status bar becomes a two-column grid, toolbars stack full-width actions.
+- <=520px: sidebar becomes `56px`, page padding drops to `12px`, primary action buttons and modal actions stretch for touch.
+- The topbar and service status bar form one continuous top control area: shared background blur, shared horizontal padding, no card-style inset, and the service status bar remains sticky at the top of the scrollable workspace.
 
 ### Shadow Depths
 
@@ -68,29 +84,30 @@
 ```css
 /* Primary Button */
 .btn-primary {
-  background: #22C55E;
+  background: #2563EB;
   color: white;
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-weight: 600;
-  transition: all 200ms ease;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-weight: 500;
+  transition: background 140ms ease, box-shadow 140ms ease;
   cursor: pointer;
 }
 
 .btn-primary:hover {
-  opacity: 0.9;
-  transform: translateY(-1px);
+  background: #1D4ED8;
 }
 
 /* Secondary Button */
 .btn-secondary {
-  background: transparent;
-  color: #1E293B;
-  border: 2px solid #1E293B;
-  padding: 12px 24px;
-  border-radius: 8px;
-  font-weight: 600;
-  transition: all 200ms ease;
+  background: #FFFFFF;
+  color: #0F172A;
+  border: 1px solid #D7DEE8;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-weight: 500;
+  transition: background 140ms ease, border-color 140ms ease;
   cursor: pointer;
 }
 ```
@@ -99,17 +116,17 @@
 
 ```css
 .card {
-  background: #0F172A;
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: var(--shadow-md);
-  transition: all 200ms ease;
-  cursor: pointer;
+  background: #FFFFFF;
+  border: 1px solid #D7DEE8;
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .card:hover {
-  box-shadow: var(--shadow-lg);
-  transform: translateY(-2px);
+  border-color: #C4CDD9;
+  box-shadow: var(--shadow-md);
 }
 ```
 
@@ -117,17 +134,18 @@
 
 ```css
 .input {
-  padding: 12px 16px;
-  border: 1px solid #E2E8F0;
-  border-radius: 8px;
-  font-size: 16px;
-  transition: border-color 200ms ease;
+  height: 34px;
+  padding: 0 11px;
+  border: 1px solid #D7DEE8;
+  border-radius: 10px;
+  font-size: 13px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .input:focus {
-  border-color: #1E293B;
+  border-color: #2563EB;
   outline: none;
-  box-shadow: 0 0 0 3px #1E293B20;
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 18%);
 }
 ```
 
@@ -136,14 +154,15 @@
 ```css
 .modal-overlay {
   background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(6px);
 }
 
 .modal {
-  background: white;
-  border-radius: 16px;
-  padding: 32px;
-  box-shadow: var(--shadow-xl);
+  background: #FFFFFF;
+  border: 1px solid #D7DEE8;
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: var(--shadow-lg);
   max-width: 500px;
   width: 90%;
 }
@@ -153,28 +172,29 @@
 
 ## Style Guidelines
 
-**Style:** Vibrant & Block-based
+**Style:** Local Route Control Console
 
-**Keywords:** Bold, energetic, playful, block layout, geometric shapes, high color contrast, duotone, modern, energetic
+**Keywords:** Desktop control surface, provider switcher, dense status cards, clear route hierarchy, neutral surfaces, restrained accents, explicit risk states
 
-**Best For:** Startups, creative agencies, gaming, social media, youth-focused, entertainment, consumer
+**Best For:** Developer tools, local gateways, AI subscription routers, operational dashboards, settings-heavy desktop apps
 
-**Key Effects:** Large sections (48px+ gaps), animated patterns, bold hover (color shift), scroll-snap, large type (32px+), 200-300ms
+**Key Effects:** 140-200ms hover transitions, no scale-based layout shift, status pills, active route highlight, confirmation dialogs for destructive or sensitive operations
 
 ### Page Pattern
 
-**Pattern Name:** Minimal Single Column
+**Pattern Name:** Control Console Shell
 
-- **Conversion Strategy:** Single CTA focus. Large typography. Lots of whitespace. No nav clutter. Mobile-first.
-- **CTA Placement:** Center, large CTA button
-- **Section Order:** 1. Hero headline, 2. Short description, 3. Benefit bullets (3 max), 4. CTA, 5. Footer
+- **Primary Task:** Determine gateway state, active route, exposed endpoint, and next operation within the first viewport.
+- **CTA Placement:** Topbar and dashboard control surface; only one primary action per task group.
+- **Section Order:** 1. Gateway control surface, 2. Provider switch panel, 3. Core metrics, 4. Recent route and logs, 5. Detail tables or forms.
 
 ---
 
 ## Anti-Patterns (Do NOT Use)
 
-- ❌ Flat design without depth
-- ❌ Text-heavy pages
+- ❌ All cards with identical visual weight
+- ❌ Destructive actions without confirmation
+- ❌ Copying third-party protected assets, icons, screenshots, or exact layouts
 
 ### Additional Forbidden Patterns
 
@@ -182,7 +202,7 @@
 - ❌ **Missing cursor:pointer** — All clickable elements must have cursor:pointer
 - ❌ **Layout-shifting hovers** — Avoid scale transforms that shift layout
 - ❌ **Low contrast text** — Maintain 4.5:1 minimum contrast ratio
-- ❌ **Instant state changes** — Always use transitions (150-300ms)
+- ❌ **Instant state changes** — Always use transitions (140-200ms)
 - ❌ **Invisible focus states** — Focus states must be visible for a11y
 
 ---

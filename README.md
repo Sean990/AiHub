@@ -33,6 +33,42 @@ npm run desktop
 
 `npm run desktop` 会同时启动 Vite 渲染进程和 Electron 主进程。桌面应用为中文界面，可管理订阅、平台 Key、模型别名、导入导出、启动/停止本地 API 服务、查看历史与日志、统计总用量和每个订阅的 Token / 缓存命中率，并在对话测试页发起请求。订阅管理页会按模型供应商分组展示 Gemini / Claude / Codex，并提供“一键获取模型列表”按钮。
 
+## 桌面打包
+
+先安装依赖：
+
+```bash
+npm install
+```
+
+构建当前系统的安装包：
+
+```bash
+npm run dist
+```
+
+仅生成未压缩的本机应用目录，适合快速验证打包内容：
+
+```bash
+npm run pack
+```
+
+macOS：
+
+```bash
+npm run dist:mac
+```
+
+产物会输出到 `release/`，包含 `.dmg` 和 `.zip`，应用图标使用界面左上角的 AiHub 图标。当前配置未签名，首次打开可能需要在系统安全设置中允许。
+
+Windows：
+
+```bash
+npm run dist:win
+```
+
+产物会输出到 `release/`，包含 `AiHub-<version>-setup-x64.exe` 和 `AiHub-<version>-portable-x64.exe`，应用图标使用界面左上角的 AiHub 图标。在非 Windows 系统上交叉构建 Windows x64 包时，`electron-builder` 需要能下载所需的构建依赖。
+
 添加订阅：
 
 ```bash

@@ -11,7 +11,66 @@
     "start": "node ./bin/aihub.js service",
     "test": "node --test",
     "desktop": "concurrently -k -s first -n vite,electron \"vite --config desktop/renderer/vite.config.js --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "desktop:build": "vite build --config desktop/renderer/vite.config.js"
+    "desktop:build": "vite build --config desktop/renderer/vite.config.js",
+    "icons:build": "node build/generate-icons.mjs",
+    "pack": "npm run desktop:build && electron-builder --dir --publish=never",
+    "dist": "npm run desktop:build && electron-builder --publish=never",
+    "dist:mac": "npm run desktop:build && electron-builder --mac --publish=never",
+    "dist:win": "npm run desktop:build && electron-builder --win --publish=never"
+  },
+  "build": {
+    "appId": "com.aihub.desktop",
+    "productName": "AiHub",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "icon": "build/icon.png",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "package.json",
+      "README.md",
+      "bin/**/*",
+      "src/**/*",
+      "desktop/main/**/*",
+      "desktop/preload/**/*",
+      "dist/renderer/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-setup-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
+    }
   },
   "engines": {
     "node": ">=22.13"
@@ -33,6 +92,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "concurrently": "^9.2.1",
     "electron": "^42.0.1",
+    "electron-builder": "^26.8.1",
     "vite": "^8.0.12",
     "wait-on": "^9.0.10"
   }

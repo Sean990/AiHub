@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="AiHub">
+  <defs>
+    <linearGradient id="aihub-mark" x1="112" y1="112" x2="912" y2="912" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2474f5" />
+      <stop offset="1" stop-color="#0765da" />
+    </linearGradient>
+  </defs>
+  <rect x="112" y="112" width="800" height="800" rx="250" fill="url(#aihub-mark)" />
+  <g transform="translate(287 287) scale(18.75)" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 8V4H8" />
+    <rect width="16" height="12" x="4" y="8" rx="2" />
+    <path d="M2 14h2" />
+    <path d="M20 14h2" />
+    <path d="M15 13v2" />
+    <path d="M9 13v2" />
+  </g>
+</svg>

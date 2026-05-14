@@ -6,3 +6,6 @@ node_modules/
 coverage/
 dist/
 qa-artifacts/
+release/
+build/icon.iconset/
+build/ico/
