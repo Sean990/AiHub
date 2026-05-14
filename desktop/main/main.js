@@ -16,7 +16,8 @@ async function createWindow() {
     minWidth: 1100,
     minHeight: 720,
     title: "AiHub",
-    backgroundColor: "#f4f6fa",
+    backgroundColor: "#0b0f14",
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,

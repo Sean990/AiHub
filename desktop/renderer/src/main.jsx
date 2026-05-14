@@ -2943,7 +2943,7 @@ function getInitialTheme() {
   if (stored === "light" || stored === "dark") {
     return stored;
   }
-  return "light";
+  return "dark";
 }
 
 function createBrowserBridge() {
