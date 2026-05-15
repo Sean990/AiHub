@@ -68,6 +68,21 @@ export async function setDesktopRetryAttempts(retryAttempts) {
   return serializeConfig(config);
 }
 
+export async function setDesktopLogging(payload = {}) {
+  const config = await updateStoreConfig((current) => {
+    const next = {
+      ...current,
+      logging: {
+        ...current.logging,
+        ...(typeof payload.enabled === "boolean" ? { enabled: payload.enabled } : {}),
+        ...(typeof payload.includePrompt === "boolean" ? { includePrompt: payload.includePrompt } : {})
+      }
+    };
+    return next;
+  });
+  return serializeConfig(config);
+}
+
 export async function upsertDesktopSubscription(subscription) {
   const config = await updateStoreConfig((current) => {
     const originalName = subscription.originalName || subscription.name;

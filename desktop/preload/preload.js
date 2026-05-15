@@ -2,13 +2,30 @@ import { contextBridge, ipcRenderer } from "electron";
 
 const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
 
+function readInitialTheme() {
+  const args = (typeof process !== "undefined" && Array.isArray(process.argv)) ? process.argv : [];
+  for (const arg of args) {
+    if (typeof arg === "string" && arg.startsWith("--aihub-initial-theme=")) {
+      const value = arg.slice("--aihub-initial-theme=".length);
+      if (value === "light" || value === "dark") {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
 contextBridge.exposeInMainWorld("aihub", {
+  initialTheme: readInitialTheme(),
   readConfig: () => invoke("config:read"),
   configPath: () => invoke("config:path"),
   setService: (payload) => invoke("config:setService", payload),
   setFallback: (enabled) => invoke("routing:setFallback", enabled),
   setRequestTimeout: (timeoutMs) => invoke("routing:setTimeout", timeoutMs),
   setRetryAttempts: (retryAttempts) => invoke("routing:setRetryAttempts", retryAttempts),
+  setLogging: (payload) => invoke("logging:set", payload),
+  revealPath: (targetPath) => invoke("ui:revealPath", targetPath),
+  persistTheme: (theme) => invoke("ui:persistTheme", theme),
   upsertSubscription: (subscription) => invoke("subscriptions:upsert", subscription),
   removeSubscription: (name) => invoke("subscriptions:remove", name),
   setSubscriptionEnabled: (payload) => invoke("subscriptions:setEnabled", payload),
@@ -36,5 +53,7 @@ contextBridge.exposeInMainWorld("aihub", {
   deleteModelRoute: (id) => invoke("modelRoutes:delete", id),
   exportStore: (payload) => invoke("store:export", payload),
   importStore: (payload) => invoke("store:import", payload),
+  saveExportToFile: (payload) => invoke("ui:saveExport", payload),
+  openImportFromFile: () => invoke("ui:openImport"),
   migrationStatus: () => invoke("migration:status")
 });
