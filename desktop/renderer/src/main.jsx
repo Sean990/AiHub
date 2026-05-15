@@ -72,15 +72,17 @@ const navGroups = [
 ];
 
 const THEME_STORAGE_KEY = "aihub-theme";
+const ACTIVE_VIEW_STORAGE_KEY = "aihub-active-view";
 const BROWSER_BRIDGE_STORAGE_KEY = "aihub-browser-bridge-state";
 const TOAST_DEFAULT_TIMEOUT = 3600;
 const TOAST_ERROR_TIMEOUT = 6500;
 const SearchFocusContext = React.createContext(() => {});
 const defaultBridge = createBrowserBridge();
 const bridge = window.aihub || defaultBridge;
+const isDemoBridge = bridge === defaultBridge;
 
 function App() {
-  const [activeView, setActiveView] = useState("dashboard");
+  const [activeView, setActiveView] = useState(() => getInitialView());
   const [theme, setTheme] = useState(() => getInitialTheme());
   const [config, setConfig] = useState(null);
   const [service, setService] = useState(null);
@@ -93,6 +95,7 @@ function App() {
   const [providerUsage, setProviderUsage] = useState({});
   const [toasts, setToasts] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [confirm, setConfirm] = useState(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const searchFocusRef = useRef(null);
@@ -134,44 +137,77 @@ function App() {
     pushToast({ tone: "error", ...options, message });
   }, [pushToast]);
 
-  async function refreshAll() {
-    const [
-      nextConfig,
-      nextStatus,
-      nextHistory,
-      nextLogs,
-      nextUsage,
-      nextPlatformKeys,
-      nextModelAliases,
-      nextMigration
-    ] = await Promise.all([
-      bridge.readConfig(),
-      bridge.serviceStatus(),
-      bridge.readHistory({ limit: 80 }),
-      bridge.readLogs({ lines: 180 }),
-      bridge.readUsage({ limit: 10000 }),
-      bridge.listPlatformKeys(),
-      bridge.listModelAliases(),
-      bridge.migrationStatus()
-    ]);
-    setConfig(nextConfig);
-    setService(nextStatus);
-    setHistory(nextHistory);
-    setLogs(nextLogs);
-    setUsage(nextUsage);
-    setPlatformKeys(nextPlatformKeys);
-    setModelAliases(nextModelAliases);
-    setMigration(nextMigration);
-  }
+  const refreshAll = useCallback(async () => {
+    const tasks = [
+      ["config", () => bridge.readConfig(), setConfig],
+      ["service", () => bridge.serviceStatus(), setService],
+      ["history", () => bridge.readHistory({ limit: 80 }), setHistory],
+      ["logs", () => bridge.readLogs({ lines: 180 }), setLogs],
+      ["usage", () => bridge.readUsage({ limit: 10000 }), setUsage],
+      ["platformKeys", () => bridge.listPlatformKeys(), setPlatformKeys],
+      ["modelAliases", () => bridge.listModelAliases(), setModelAliases],
+      ["migration", () => bridge.migrationStatus(), setMigration]
+    ];
+    setRefreshing(true);
+    try {
+      const results = await Promise.allSettled(tasks.map(([, run]) => run()));
+      const failures = [];
+      results.forEach((entry, index) => {
+        const [name, , apply] = tasks[index];
+        if (entry.status === "fulfilled") {
+          apply(entry.value);
+        } else {
+          failures.push({ name, reason: entry.reason });
+        }
+      });
+      if (failures.length > 0) {
+        const detail = failures
+          .map(({ name, reason }) => `${name}: ${reason?.message || String(reason)}`)
+          .join("；");
+        reportError(`部分数据刷新失败 — ${detail}`);
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [reportError]);
 
-  async function runAction(action, successMessage) {
+  const refreshLogs = useCallback(async () => {
+    try {
+      const nextLogs = await bridge.readLogs({ lines: 180 });
+      setLogs(nextLogs);
+    } catch (nextError) {
+      reportError(nextError);
+    }
+  }, [reportError]);
+
+  const refreshSecondary = useCallback(async () => {
+    const tasks = [
+      ["service", () => bridge.serviceStatus(), setService],
+      ["history", () => bridge.readHistory({ limit: 80 }), setHistory],
+      ["usage", () => bridge.readUsage({ limit: 10000 }), setUsage],
+      ["platformKeys", () => bridge.listPlatformKeys(), setPlatformKeys],
+      ["modelAliases", () => bridge.listModelAliases(), setModelAliases],
+      ["migration", () => bridge.migrationStatus(), setMigration]
+    ];
+    const results = await Promise.allSettled(tasks.map(([, run]) => run()));
+    results.forEach((entry, index) => {
+      const [, , apply] = tasks[index];
+      if (entry.status === "fulfilled") {
+        apply(entry.value);
+      }
+    });
+  }, []);
+
+  const runAction = useCallback(async (action, successMessage) => {
     setBusy(true);
     try {
       const result = await action();
-      await refreshAll();
       const nextConfig = configFromActionResult(result);
       if (nextConfig) {
         setConfig(nextConfig);
+        await refreshSecondary();
+      } else {
+        await refreshAll();
       }
       if (successMessage) {
         notify(successMessage);
@@ -183,7 +219,7 @@ function App() {
     } finally {
       setBusy(false);
     }
-  }
+  }, [refreshAll, refreshSecondary, reportError, notify]);
 
   async function copyText(text, successMessage = "已复制到剪贴板") {
     if (!text) {
@@ -237,12 +273,26 @@ function App() {
 
   useEffect(() => {
     refreshAll().catch((nextError) => reportError(nextError));
-  }, []);
+  }, [refreshAll, reportError]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage?.setItem(THEME_STORAGE_KEY, theme);
+    if (typeof bridge.persistTheme === "function") {
+      Promise.resolve(bridge.persistTheme(theme)).catch(() => {});
+    }
   }, [theme]);
+
+  useEffect(() => {
+    if (!activeView) {
+      return;
+    }
+    try {
+      window.localStorage?.setItem(ACTIVE_VIEW_STORAGE_KEY, activeView);
+    } catch {
+      // ignore quota errors
+    }
+  }, [activeView]);
 
   useEffect(() => {
     function isTextEditingTarget(target) {
@@ -263,7 +313,16 @@ function App() {
       const meta = event.metaKey || event.ctrlKey;
       if (meta && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        searchFocusRef.current?.();
+        const focusFn = searchFocusRef.current;
+        if (typeof focusFn === "function") {
+          focusFn();
+        } else {
+          pushToast({
+            tone: "info",
+            message: "当前页没有可搜索内容",
+            timeout: 1800
+          });
+        }
         return;
       }
       if (meta && event.key.toLowerCase() === "r") {
@@ -296,13 +355,46 @@ function App() {
 
     document.addEventListener("keydown", handleShortcut);
     return () => document.removeEventListener("keydown", handleShortcut);
-  }, [reportError]);
+  }, [runAction, refreshAll, pushToast]);
 
   const enabledSubscriptions = useMemo(
     () => (config?.subscriptions || []).filter((subscription) => subscription.enabled),
     [config]
   );
-  const recent = history[history.length - 1];
+  const recent = useMemo(() => {
+    if (!history || history.length === 0) {
+      return null;
+    }
+    let latest = null;
+    let latestTime = -Infinity;
+    for (const entry of history) {
+      const time = new Date(entry?.ts || 0).getTime();
+      if (Number.isFinite(time) && time >= latestTime) {
+        latest = entry;
+        latestTime = time;
+      }
+    }
+    return latest || history[history.length - 1];
+  }, [history]);
+
+  useEffect(() => {
+    if (!config) {
+      return;
+    }
+    setProviderUsage((current) => {
+      const known = new Set((config.subscriptions || []).map((subscription) => subscription.name));
+      const next = {};
+      let changed = false;
+      for (const [name, value] of Object.entries(current)) {
+        if (known.has(name)) {
+          next[name] = value;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [config]);
 
   return (
     <SearchFocusContext.Provider value={searchFocusRef}>
@@ -376,14 +468,14 @@ function App() {
               {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
             </button>
             <button
-              className={`icon-button ${busy ? "is-busy" : ""}`}
+              className={`icon-button ${refreshing ? "is-busy" : ""}`}
               onClick={() => runAction(refreshAll)}
               aria-label="刷新全部状态"
               title={`刷新 · ${getMetaKeyLabel()}+R`}
-              disabled={busy}
+              disabled={refreshing}
               type="button"
             >
-              <RefreshCw className={busy ? "spin" : ""} size={16} />
+              <RefreshCw className={refreshing ? "spin" : ""} size={16} />
             </button>
             {service?.running ? (
               <button
@@ -412,6 +504,15 @@ function App() {
         </header>
 
         <div className="workspace-content">
+          {isDemoBridge ? (
+            <div className="message-strip warn demo-bridge-banner" role="status" aria-live="polite">
+              <AlertTriangle size={16} />
+              <div>
+                <div className="strong">桌面 API 桥接未启用</div>
+                <p className="muted">当前显示的是浏览器演示数据，未连接到本地服务。如果你在 Electron 中看到此提示，说明 preload 加载失败，请重新启动客户端。</p>
+              </div>
+            </div>
+          ) : null}
           {config && service ? (
             <WorkspaceStatusBar
               config={config}
@@ -442,6 +543,7 @@ function App() {
               recent={recent}
               runAction={runAction}
               refreshAll={refreshAll}
+              refreshLogs={refreshLogs}
               providerUsage={providerUsage}
               setProviderUsage={setProviderUsage}
               setActiveView={setActiveView}
@@ -521,6 +623,15 @@ function WorkspaceStatusBar({ config, enabledSubscriptions, modelAliases, platfo
         >
           <Clipboard size={14} />
         </button>
+        <button
+          className="inline-copy-button"
+          onClick={() => copyText(buildOpenAiEnvSnippet(service, platformKeys), "OpenAI 环境变量已复制")}
+          aria-label="复制 OpenAI 环境变量"
+          title="复制 export OPENAI_BASE_URL / OPENAI_API_KEY"
+          type="button"
+        >
+          <Terminal size={14} />
+        </button>
       </div>
       <div className="statusbar-item">
         <span>订阅</span>
@@ -575,7 +686,13 @@ function DashboardView({ config, service, enabledSubscriptions, logs, usage, rec
             </div>
             <div>
               <span>最近响应</span>
-              <strong>{recent ? (recent.ok ? `成功 · ${formatNumber(recent.usage?.totalTokens || 0)} tk` : "失败") : "暂无"}</strong>
+              <strong>
+                {recent
+                  ? recent.ok
+                    ? `成功 · ${formatTokenLabel(recent.usage?.totalTokens)}`
+                    : "失败"
+                  : "暂无"}
+              </strong>
             </div>
           </div>
           <div className="service-hero-actions">
@@ -670,8 +787,8 @@ function DashboardView({ config, service, enabledSubscriptions, logs, usage, rec
               <Row label="时间" value={recent.ts} />
               <Row label="结果" value={recent.ok ? "成功" : "失败"} />
               <Row label="路由" value={`${recent.provider || "auto"} / ${recent.subscription || "-"} / ${recent.model || "-"}`} />
-              <Row label="Token" value={formatNumber(recent.usage?.totalTokens || 0)} />
-              <Row label="缓存命中" value={formatPercent(cacheHitRate(recent.usage))} />
+              <Row label="Token" value={formatTokenLabel(recent.usage?.totalTokens)} />
+              <Row label="缓存命中" value={formatPercentOrDash(cacheHitRate(recent.usage), recent.usage?.inputTokens)} />
               {recent.error ? <Row label="错误" value={recent.error} /> : null}
             </div>
           ) : (
@@ -703,7 +820,7 @@ function buildProviderSummaries(subscriptions = []) {
   });
 }
 
-function SubscriptionsView({ config, usage, runAction, providerUsage, setProviderUsage, runConfirmed }) {
+function SubscriptionsView({ config, service, usage, runAction, providerUsage, setProviderUsage, runConfirmed, notify }) {
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
@@ -711,7 +828,7 @@ function SubscriptionsView({ config, usage, runAction, providerUsage, setProvide
   const normalizedFilter = filter.trim().toLowerCase();
   const subscriptions = (config.subscriptions || []).filter((item) => {
     const providerMatched = providerFilter === "all" || item.provider === providerFilter;
-    const textMatched = `${item.name} ${item.provider} ${item.model} ${(item.models || []).join(" ")}`
+    const textMatched = `${item.name} ${item.provider} ${item.model} ${(item.models || []).join(" ")} ${item.notes || ""} ${item.website || ""}`
       .toLowerCase()
       .includes(normalizedFilter);
     return providerMatched && textMatched;
@@ -763,6 +880,24 @@ function SubscriptionsView({ config, usage, runAction, providerUsage, setProvide
 
   return (
     <div className="stack subscriptions-view">
+      {service && !service.running && (config.subscriptions || []).some((subscription) => subscription.enabled) ? (
+        <div className="message-strip warn">
+          <AlertTriangle size={16} />
+          <div>
+            <div className="strong">本地网关未启动</div>
+            <p className="muted">订阅已启用，但外部 CLI 还无法访问。点击右上角"启动"或下方按钮开启网关。</p>
+          </div>
+          <button
+            className="primary-button"
+            onClick={() => runAction(() => bridge.startService(), "服务已启动")}
+            type="button"
+          >
+            <Play size={14} />
+            启动网关
+          </button>
+        </div>
+      ) : null}
+
       <section className="provider-tabs" role="tablist" aria-label="按供应商筛选">
         <button
           className={`provider-tab all ${providerFilter === "all" ? "active" : ""}`}
@@ -847,6 +982,18 @@ function SubscriptionsView({ config, usage, runAction, providerUsage, setProvide
                     runAction(() => bridge.fetchSubscriptionModels(subscription.name), "模型列表已更新")
                   }
                   onQueryUsage={() => queryUsage(subscription)}
+                  onTestConnection={async () => {
+                    try {
+                      const result = await runAction(
+                        () => bridge.testSubscriptionConnection(subscription.name)
+                      );
+                      if (result?.ok) {
+                        notify?.(`连接成功 · ${result.modelCount} 个模型 · ${result.latencyMs} ms`);
+                      }
+                    } catch {
+                      // already surfaced
+                    }
+                  }}
                   onDelete={() =>
                     runConfirmed({
                       title: "删除订阅",
@@ -908,6 +1055,7 @@ function SubscriptionRow({
   onPriorityChange,
   onFetchModels,
   onQueryUsage,
+  onTestConnection,
   onDelete
 }) {
   const models = subscription.models?.length ? subscription.models : subscription.model ? [subscription.model] : [];
@@ -1002,6 +1150,15 @@ function SubscriptionRow({
         <div className="sub-row-actions">
           <button
             className="icon-button"
+            onClick={onTestConnection}
+            aria-label={`测试 ${subscription.name} 的连通性`}
+            title="测试连通性"
+            type="button"
+          >
+            <Wifi size={15} />
+          </button>
+          <button
+            className="icon-button"
             onClick={onFetchModels}
             aria-label={`一键获取 ${subscription.name} 的模型列表`}
             title="一键获取模型列表"
@@ -1052,12 +1209,15 @@ function PriorityInput({ value, ariaLabel, onCommit }) {
   function commit() {
     const trimmed = draft.trim();
     const nextValue = Number(trimmed);
-    if (!trimmed || !Number.isFinite(nextValue)) {
+    if (!trimmed || !Number.isFinite(nextValue) || nextValue < 0) {
       setDraft(String(value ?? ""));
       return;
     }
-    if (nextValue !== Number(value)) {
-      onCommit(nextValue);
+    const intValue = Math.floor(nextValue);
+    if (intValue !== Number(value)) {
+      onCommit(intValue);
+    } else {
+      setDraft(String(intValue));
     }
   }
 
@@ -1078,6 +1238,8 @@ function PriorityInput({ value, ariaLabel, onCommit }) {
       aria-label={ariaLabel}
       inputMode="numeric"
       type="number"
+      min="0"
+      step="1"
       value={draft}
       onBlur={commit}
       onChange={(event) => setDraft(event.target.value)}
@@ -1180,6 +1342,7 @@ function UsageView({ usage, refreshAll, providerUsage, setProviderUsage, runActi
 function PlatformKeysView({ platformKeys, service, runAction, runConfirmed, copyText }) {
   const [form, setForm] = useState({ name: "", monthlyRequestQuota: "", monthlyTokenQuota: "" });
   const [createdKey, setCreatedKey] = useState("");
+  const [editing, setEditing] = useState(null);
   const enabledCount = (platformKeys || []).filter((key) => key.enabled).length;
   const monthRequests = (platformKeys || []).reduce((sum, key) => sum + Number(key.monthRequests || 0), 0);
   const monthTokens = (platformKeys || []).reduce((sum, key) => sum + Number(key.monthTokens || 0), 0);
@@ -1218,6 +1381,15 @@ function PlatformKeysView({ platformKeys, service, runAction, runConfirmed, copy
             <code>{service.baseUrl}</code>
             <button className="icon-button" onClick={() => copyText(service.baseUrl, "Base URL 已复制")} aria-label="复制 Base URL" title="复制 Base URL" type="button">
               <Clipboard size={16} />
+            </button>
+            <button
+              className="icon-button"
+              onClick={() => copyText(buildOpenAiEnvSnippet(service, platformKeys), "OpenAI 环境变量已复制")}
+              aria-label="复制 OpenAI 环境变量"
+              title="复制 export 语句"
+              type="button"
+            >
+              <Terminal size={16} />
             </button>
           </div>
         </div>
@@ -1293,6 +1465,15 @@ function PlatformKeysView({ platformKeys, service, runAction, runConfirmed, copy
                   <div className="row-actions">
                     <button
                       className="icon-button"
+                      onClick={() => setEditing(key)}
+                      aria-label={`编辑平台 Key ${key.name}`}
+                      title="编辑"
+                      type="button"
+                    >
+                      <Settings size={15} />
+                    </button>
+                    <button
+                      className="icon-button"
                       onClick={() => runAction(() => bridge.setPlatformKeyEnabled({ id: key.id, enabled: !key.enabled }), "平台 Key 状态已更新")}
                       aria-label={`${key.enabled ? "禁用" : "启用"}平台 Key ${key.name}`}
                       title={key.enabled ? "禁用" : "启用"}
@@ -1326,6 +1507,139 @@ function PlatformKeysView({ platformKeys, service, runAction, runConfirmed, copy
       </div>
       {platformKeys.length === 0 ? <EmptyState title="暂无平台 Key" body="未创建平台 Key 前，本地网关仍接受 aihub-local 兼容旧用法。" /> : null}
     </section>
+
+    {editing ? (
+      <PlatformKeyDialog
+        platformKey={editing}
+        onClose={() => setEditing(null)}
+        onSave={(payload) =>
+          runAction(() => bridge.updatePlatformKey(payload), "平台 Key 已更新").then(() => setEditing(null))
+        }
+      />
+    ) : null}
+    </div>
+  );
+}
+
+function PlatformKeyDialog({ platformKey, onClose, onSave }) {
+  const [name, setName] = useState(platformKey.name || "");
+  const [requestQuota, setRequestQuota] = useState(String(platformKey.monthlyRequestQuota ?? ""));
+  const [tokenQuota, setTokenQuota] = useState(String(platformKey.monthlyTokenQuota ?? ""));
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape" && !saving) {
+        event.preventDefault();
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, saving]);
+
+  function parseQuota(raw) {
+    const trimmed = String(raw ?? "").trim();
+    if (!trimmed) {
+      return 0;
+    }
+    const value = Number(trimmed);
+    if (!Number.isFinite(value) || value < 0) {
+      return NaN;
+    }
+    return Math.floor(value);
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    if (saving) {
+      return;
+    }
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setError("请填写 Key 名称。");
+      return;
+    }
+    const requestValue = parseQuota(requestQuota);
+    const tokenValue = parseQuota(tokenQuota);
+    if (Number.isNaN(requestValue) || Number.isNaN(tokenValue)) {
+      setError("额度必须是 0 或正整数。");
+      return;
+    }
+    setError("");
+    setSaving(true);
+    try {
+      await onSave({
+        id: platformKey.id,
+        name: trimmedName,
+        monthlyRequestQuota: requestValue,
+        monthlyTokenQuota: tokenValue
+      });
+    } catch (nextError) {
+      setError(nextError?.message || String(nextError));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !saving) {
+          onClose();
+        }
+      }}
+      role="presentation"
+    >
+      <section className="modal" role="dialog" aria-modal="true" aria-label="编辑平台 Key">
+        <div className="modal-header">
+          <div>
+            <div className="modal-kicker">Platform Key</div>
+            <h2>编辑平台 Key</h2>
+            <p className="muted">仅修改名称和额度，原 Key 内容不会变化。</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" title="关闭" type="button" disabled={saving}>
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="form-grid compact">
+            <Field label="Key 名称">
+              <input value={name} onChange={(event) => setName(event.target.value)} autoFocus required />
+            </Field>
+            <Field label="前缀">
+              <input value={platformKey.keyPrefix || ""} readOnly />
+            </Field>
+            <Field label="月请求额度">
+              <input
+                type="number"
+                min="0"
+                value={requestQuota}
+                onChange={(event) => setRequestQuota(event.target.value)}
+                placeholder="0 表示不限"
+              />
+            </Field>
+            <Field label="月 Token 额度">
+              <input
+                type="number"
+                min="0"
+                value={tokenQuota}
+                onChange={(event) => setTokenQuota(event.target.value)}
+                placeholder="0 表示不限"
+              />
+            </Field>
+          </div>
+          {error ? <div className="dialog-status error">{error}</div> : null}
+          <div className="modal-actions">
+            <button className="secondary-button" onClick={onClose} type="button" disabled={saving}>取消</button>
+            <button className="primary-button" type="submit" disabled={saving}>
+              {saving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+              {saving ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </form>
+      </section>
     </div>
   );
 }
@@ -1334,6 +1648,8 @@ function ModelsView({ config, modelAliases, runAction, runConfirmed }) {
   const [aliasForm, setAliasForm] = useState({ alias: "", description: "" });
   const [routeForm, setRouteForm] = useState({ alias: "", subscriptionName: "", providerModel: "", priority: 100, enabled: true });
   const [filter, setFilter] = useState("");
+  const [editingAlias, setEditingAlias] = useState(null);
+  const [editingRoute, setEditingRoute] = useState(null);
   const enabledAliases = modelAliases.filter((alias) => alias.enabled).length;
   const routeCount = modelAliases.reduce((sum, alias) => sum + alias.routes.length, 0);
   const normalizedFilter = filter.trim().toLowerCase();
@@ -1489,6 +1805,15 @@ function ModelsView({ config, modelAliases, runAction, runConfirmed }) {
                         {route.priority}: {route.subscriptionName} / {route.providerModel || "默认"}
                         <button
                           className="inline-icon"
+                          onClick={() => setEditingRoute({ ...route, alias: alias.alias })}
+                          aria-label={`编辑 ${alias.alias} 到 ${route.subscriptionName} 的路由`}
+                          title="编辑路由"
+                          type="button"
+                        >
+                          <Settings size={13} />
+                        </button>
+                        <button
+                          className="inline-icon"
                           onClick={() =>
                             runConfirmed({
                               title: "删除模型路由",
@@ -1510,6 +1835,15 @@ function ModelsView({ config, modelAliases, runAction, runConfirmed }) {
                 </td>
                 <td>
                   <div className="row-actions">
+                    <button
+                      className="icon-button"
+                      onClick={() => setEditingAlias(alias)}
+                      aria-label={`编辑模型别名 ${alias.alias}`}
+                      title="编辑"
+                      type="button"
+                    >
+                      <Settings size={15} />
+                    </button>
                     <button
                       className="icon-button"
                       onClick={() => runAction(() => bridge.setModelAliasEnabled({ alias: alias.alias, enabled: !alias.enabled }), "模型状态已更新")}
@@ -1549,6 +1883,228 @@ function ModelsView({ config, modelAliases, runAction, runConfirmed }) {
         <EmptyState title="没有匹配的模型" body="尝试清空搜索或换一个关键字。" />
       ) : null}
     </section>
+
+    {editingAlias ? (
+      <ModelAliasDialog
+        alias={editingAlias}
+        onClose={() => setEditingAlias(null)}
+        onSave={(payload) =>
+          runAction(() => bridge.upsertModelAlias(payload), "模型别名已更新").then(() => setEditingAlias(null))
+        }
+      />
+    ) : null}
+
+    {editingRoute ? (
+      <ModelRouteDialog
+        route={editingRoute}
+        subscriptions={config.subscriptions || []}
+        onClose={() => setEditingRoute(null)}
+        onSave={(payload) =>
+          runAction(() => bridge.upsertModelRoute(payload), "模型路由已更新").then(() => setEditingRoute(null))
+        }
+      />
+    ) : null}
+    </div>
+  );
+}
+
+function ModelAliasDialog({ alias, onClose, onSave }) {
+  const [description, setDescription] = useState(alias.description || "");
+  const [enabled, setEnabled] = useState(alias.enabled !== false);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape" && !saving) {
+        event.preventDefault();
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, saving]);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (saving) {
+      return;
+    }
+    setError("");
+    setSaving(true);
+    try {
+      await onSave({ alias: alias.alias, description: description.trim(), enabled });
+    } catch (nextError) {
+      setError(nextError?.message || String(nextError));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !saving) {
+          onClose();
+        }
+      }}
+      role="presentation"
+    >
+      <section className="modal" role="dialog" aria-modal="true" aria-label="编辑模型别名">
+        <div className="modal-header">
+          <div>
+            <div className="modal-kicker">Model Alias</div>
+            <h2>编辑模型别名</h2>
+            <p className="muted">别名一旦创建不可改名，调整说明文字和启用状态。</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" title="关闭" type="button" disabled={saving}>
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="form-grid compact">
+            <Field label="别名">
+              <input value={alias.alias} readOnly />
+            </Field>
+            <Field label="说明">
+              <input
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                autoFocus
+                placeholder="给外部工具看到的模型说明"
+              />
+            </Field>
+          </div>
+          <label className="check-row">
+            <input checked={enabled} type="checkbox" onChange={(event) => setEnabled(event.target.checked)} />
+            参与路由
+          </label>
+          {error ? <div className="dialog-status error">{error}</div> : null}
+          <div className="modal-actions">
+            <button className="secondary-button" onClick={onClose} type="button" disabled={saving}>取消</button>
+            <button className="primary-button" type="submit" disabled={saving}>
+              {saving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+              {saving ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function ModelRouteDialog({ route, subscriptions, onClose, onSave }) {
+  const [subscriptionName, setSubscriptionName] = useState(route.subscriptionName || "");
+  const [providerModel, setProviderModel] = useState(route.providerModel || "");
+  const [priority, setPriority] = useState(String(route.priority ?? 100));
+  const [enabled, setEnabled] = useState(route.enabled !== false);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape" && !saving) {
+        event.preventDefault();
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, saving]);
+
+  async function submit(event) {
+    event.preventDefault();
+    if (saving) {
+      return;
+    }
+    if (!subscriptionName) {
+      setError("请选择订阅。");
+      return;
+    }
+    const priorityValue = Number(priority);
+    if (!Number.isFinite(priorityValue) || priorityValue < 0) {
+      setError("优先级必须是 0 或正整数。");
+      return;
+    }
+    setError("");
+    setSaving(true);
+    try {
+      await onSave({
+        id: route.id,
+        alias: route.alias,
+        subscriptionName,
+        providerModel: providerModel.trim(),
+        priority: Math.floor(priorityValue),
+        enabled
+      });
+    } catch (nextError) {
+      setError(nextError?.message || String(nextError));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !saving) {
+          onClose();
+        }
+      }}
+      role="presentation"
+    >
+      <section className="modal" role="dialog" aria-modal="true" aria-label="编辑模型路由">
+        <div className="modal-header">
+          <div>
+            <div className="modal-kicker">Model Route</div>
+            <h2>编辑路由 {route.alias}</h2>
+            <p className="muted">调整该公开模型在某个订阅上的优先级或真实模型。</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="关闭" title="关闭" type="button" disabled={saving}>
+            <X size={18} />
+          </button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="form-grid compact">
+            <Field label="订阅">
+              <select value={subscriptionName} onChange={(event) => setSubscriptionName(event.target.value)} required>
+                <option value="">选择订阅</option>
+                {subscriptions.map((subscription) => (
+                  <option key={subscription.name} value={subscription.name}>{subscription.name}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="真实模型">
+              <input
+                value={providerModel}
+                onChange={(event) => setProviderModel(event.target.value)}
+                placeholder="留空使用订阅默认模型"
+              />
+            </Field>
+            <Field label="优先级">
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={priority}
+                onChange={(event) => setPriority(event.target.value)}
+              />
+            </Field>
+          </div>
+          <label className="check-row">
+            <input checked={enabled} type="checkbox" onChange={(event) => setEnabled(event.target.checked)} />
+            启用此路由
+          </label>
+          {error ? <div className="dialog-status error">{error}</div> : null}
+          <div className="modal-actions">
+            <button className="secondary-button" onClick={onClose} type="button" disabled={saving}>取消</button>
+            <button className="primary-button" type="submit" disabled={saving}>
+              {saving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+              {saving ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </form>
+      </section>
     </div>
   );
 }
@@ -1568,6 +2124,7 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
     apiVersion: subscription.apiVersion || "",
     website: subscription.website || "",
     notes: subscription.notes || "",
+    tagsText: Array.isArray(subscription.tags) ? subscription.tags.join(", ") : "",
     timeoutMs: subscription.timeoutMs || 0
   }), [subscription]);
   const [form, setForm] = useState(initialForm);
@@ -1591,14 +2148,14 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
 
   useEffect(() => {
     function handleKeyDown(event) {
-      if (event.key === "Escape" && !testing && !saving) {
+      if (event.key === "Escape" && !testing && !saving && !confirmingClose) {
         event.preventDefault();
         requestClose();
       }
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [requestClose, testing, saving]);
+  }, [requestClose, testing, saving, confirmingClose]);
 
   function setField(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -1815,6 +2372,14 @@ function SubscriptionDialog({ subscription, subscriptions = [], onClose, onSave 
                     <input autoComplete="off" value={form.notes} onChange={(event) => setField("notes", event.target.value)} placeholder="记录供应商来源或用途" />
                   </Field>
                 </div>
+                <Field label="标签（逗号分隔）">
+                  <input
+                    autoComplete="off"
+                    value={form.tagsText}
+                    onChange={(event) => setField("tagsText", event.target.value)}
+                    placeholder="例如：production, fallback, low-cost"
+                  />
+                </Field>
               </section>
 
               <section className="form-section">
@@ -1926,7 +2491,7 @@ function isFormDirty(current, initial) {
 }
 
 function normalizeSubscriptionForm(form) {
-  const { modelsText, ...payload } = form;
+  const { modelsText, tagsText, ...payload } = form;
   return {
     ...payload,
     name: payload.name.trim(),
@@ -1937,7 +2502,8 @@ function normalizeSubscriptionForm(form) {
     apiKey: payload.apiKey.trim(),
     website: payload.website.trim(),
     notes: payload.notes.trim(),
-    models: modelsText.split(/[\n,]/).map((value) => value.trim()).filter(Boolean)
+    models: modelsText.split(/[\n,]/).map((value) => value.trim()).filter(Boolean),
+    tags: (tagsText || "").split(/[\n,]/).map((value) => value.trim()).filter(Boolean)
   };
 }
 
@@ -1964,7 +2530,44 @@ function validateSubscriptionForm(
   if (!form.apiKey.trim() && !allowExistingSecret) {
     return "请填写 API Key。";
   }
+  if (form.baseUrl && !isValidHttpUrl(form.baseUrl)) {
+    return "Base URL 需要以 http:// 或 https:// 开头。";
+  }
+  if (form.usageUrl && !isValidHttpUrl(form.usageUrl)) {
+    return "用量查询 URL 需要以 http:// 或 https:// 开头。";
+  }
+  if (form.website && !isValidHttpUrl(form.website)) {
+    return "官方网站 URL 需要以 http:// 或 https:// 开头。";
+  }
+  if (form.provider === "openai-compatible" && !form.baseUrl.trim()) {
+    return "OpenAI 兼容订阅必须填写 Base URL。";
+  }
+  const timeoutMs = Number(form.timeoutMs);
+  if (form.timeoutMs !== "" && form.timeoutMs != null) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+      return "Timeout 必须是 0 或正整数（毫秒）。";
+    }
+    if (timeoutMs > 600000) {
+      return "Timeout 不应超过 600000 ms（10 分钟）。";
+    }
+  }
+  const priority = Number(form.priority);
+  if (!Number.isFinite(priority) || priority < 0) {
+    return "优先级必须是 0 或正整数。";
+  }
   return "";
+}
+
+function isValidHttpUrl(value) {
+  if (!value) {
+    return true;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function providerModelPlaceholder(provider) {
@@ -1994,7 +2597,7 @@ function providerModeHint(provider) {
   }[provider] || "自定义供应商";
 }
 
-function ChatView({ config, runAction }) {
+function ChatView({ config, service, runAction, runConfirmed, setActiveView, copyText }) {
   const [prompt, setPrompt] = useState("");
   const [provider, setProvider] = useState("auto");
   const [subscription, setSubscription] = useState("");
@@ -2089,7 +2692,36 @@ function ChatView({ config, runAction }) {
       </section>
 
       <section className="panel chat-result">
-        <h2>响应</h2>
+        <div className="chat-result-head">
+          <h2>响应</h2>
+          {result?.text ? (
+            <button
+              className="secondary-button chat-copy-response"
+              onClick={() => copyText?.(result.text, "响应已复制")}
+              type="button"
+            >
+              <Clipboard size={14} />
+              复制响应
+            </button>
+          ) : null}
+        </div>
+        {service && !service.running ? (
+          <div className="message-strip warn chat-service-banner">
+            <AlertTriangle size={16} />
+            <div>
+              <div className="strong">本地网关未启动</div>
+              <p className="muted">服务停止时仍可发起请求测试，但外部 CLI 无法走聚合路由。</p>
+            </div>
+            <button
+              className="primary-button"
+              onClick={() => runAction?.(() => bridge.startService(), "服务已启动")}
+              type="button"
+            >
+              <Play size={14} />
+              启动网关
+            </button>
+          </div>
+        ) : null}
         {result ? (
           <>
             <pre className="response-text">{result.text}</pre>
@@ -2103,6 +2735,33 @@ function ChatView({ config, runAction }) {
               <Row label="缓存命中率" value={formatPercent(cacheHitRate(result.usage))} />
               <Row label="尝试次数" value={String(result.attempts?.length || 0)} />
             </div>
+            {result.attempts && result.attempts.length > 0 ? (
+              <div className="chat-attempts" aria-label="尝试链路">
+                <div className="chat-attempts-title">尝试链路</div>
+                <ol>
+                  {result.attempts.map((attempt, index) => (
+                    <li key={`${attempt.subscription || "auto"}-${index}`} className={attempt.ok ? "ok" : "fail"}>
+                      <span className="chat-attempt-index">{index + 1}</span>
+                      <div className="chat-attempt-body">
+                        <div className="chat-attempt-line">
+                          <strong>{attempt.subscription || "auto"}</strong>
+                          <ProviderBadge provider={attempt.provider || "auto"} />
+                          {attempt.model ? <code>{attempt.model}</code> : null}
+                          <span className="chat-attempt-tag">
+                            {attempt.ok ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                            {attempt.ok ? "成功" : "失败"}
+                          </span>
+                          {Number.isFinite(Number(attempt.latencyMs)) ? (
+                            <span className="muted">{formatNumber(attempt.latencyMs)} ms</span>
+                          ) : null}
+                        </div>
+                        {attempt.error ? <div className="chat-attempt-error">{attempt.error}</div> : null}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
           </>
         ) : (
           <EmptyState title="暂无响应" body="添加真实或 mock 订阅后，可以在这里验证路由、用量和缓存统计。" />
@@ -2114,9 +2773,20 @@ function ChatView({ config, runAction }) {
 
 function HistoryView({ history, refreshAll }) {
   const [filter, setFilter] = useState("");
-  const rows = history.filter((entry) =>
-    `${entry.ts} ${entry.provider} ${entry.subscription} ${entry.alias || ""} ${entry.model} ${entry.platformKey?.name || ""} ${entry.error || ""}`.toLowerCase().includes(filter.toLowerCase())
+  const [visible, setVisible] = useState(50);
+  const lowered = filter.toLowerCase();
+  const filtered = history.filter((entry) =>
+    `${entry.ts} ${entry.provider} ${entry.subscription} ${entry.alias || ""} ${entry.model} ${entry.platformKey?.name || ""} ${entry.error || ""}`
+      .toLowerCase()
+      .includes(lowered)
   );
+  const sorted = [...filtered].sort((a, b) => {
+    const aTime = new Date(a.ts).getTime() || 0;
+    const bTime = new Date(b.ts).getTime() || 0;
+    return bTime - aTime;
+  });
+  const rows = sorted.slice(0, visible);
+  const hasMore = sorted.length > visible;
 
   return (
     <div className="stack">
@@ -2173,26 +2843,38 @@ function HistoryView({ history, refreshAll }) {
         </table>
       </div>
       {rows.length === 0 ? <EmptyState title="暂无历史" body="所有通过聚合路由的请求都会记录在这里。" /> : null}
+      {hasMore ? (
+        <div className="history-more">
+          <button
+            className="secondary-button"
+            onClick={() => setVisible((current) => current + 50)}
+            type="button"
+          >
+            加载更多 · 已显示 {rows.length} / {sorted.length}
+          </button>
+        </div>
+      ) : null}
     </section>
     </div>
   );
 }
 
-function LogsView({ logs, refreshAll }) {
+function LogsView({ logs, refreshAll, refreshLogs }) {
   const [filter, setFilter] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(false);
   const filtered = logs.filter((line) => line.toLowerCase().includes(filter.toLowerCase()));
   const preRef = useRef(null);
+  const refreshLogsOnly = refreshLogs || refreshAll;
 
   useEffect(() => {
     if (!autoRefresh) {
       return undefined;
     }
     const handle = window.setInterval(() => {
-      refreshAll();
+      refreshLogsOnly();
     }, 4000);
     return () => window.clearInterval(handle);
-  }, [autoRefresh, refreshAll]);
+  }, [autoRefresh, refreshLogsOnly]);
 
   useEffect(() => {
     if (preRef.current) {
@@ -2224,7 +2906,7 @@ function LogsView({ logs, refreshAll }) {
               {autoRefresh ? <Pause size={16} /> : <Play size={16} />}
               {autoRefresh ? "停止跟随" : "实时跟随"}
             </button>
-            <button className="secondary-button" onClick={refreshAll} type="button">
+            <button className="secondary-button" onClick={refreshLogsOnly} type="button">
               <RefreshCw size={16} />
               刷新
             </button>
@@ -2242,7 +2924,7 @@ function LogsView({ logs, refreshAll }) {
   );
 }
 
-function ImportExportView({ migration, runAction, runConfirmed, copyText }) {
+function ImportExportView({ migration, runAction, runConfirmed, copyText, notify, reportError }) {
   const [includeProviderKeys, setIncludeProviderKeys] = useState(false);
   const [exportText, setExportText] = useState("");
   const [importText, setImportText] = useState("");
@@ -2312,6 +2994,27 @@ function ImportExportView({ migration, runAction, runConfirmed, copyText }) {
               <Clipboard size={16} />
               复制
             </button>
+            <button
+              className="secondary-button"
+              disabled={!exportText}
+              onClick={async () => {
+                try {
+                  const result = await bridge.saveExportToFile?.({
+                    content: exportText,
+                    suggestedName: `aihub-export-${new Date().toISOString().slice(0, 10)}.json`
+                  });
+                  if (result?.canceled === false && result?.filePath) {
+                    notify?.(`已保存到 ${result.filePath}`);
+                  }
+                } catch (nextError) {
+                  reportError?.(nextError);
+                }
+              }}
+              type="button"
+            >
+              <Save size={16} />
+              另存为文件
+            </button>
           </div>
           <textarea className="json-area" readOnly value={exportText} placeholder="导出的 JSON 会显示在这里" />
         </div>
@@ -2334,6 +3037,25 @@ function ImportExportView({ migration, runAction, runConfirmed, copyText }) {
               <Save size={16} />
               导入
             </button>
+            <button
+              className="secondary-button"
+              onClick={async () => {
+                try {
+                  const result = await bridge.openImportFromFile?.();
+                  if (result?.canceled === false && typeof result.content === "string") {
+                    setImportText(result.content);
+                    setImportError("");
+                    notify?.(`已加载 ${result.filePath || "导入文件"}`);
+                  }
+                } catch (nextError) {
+                  reportError?.(nextError);
+                }
+              }}
+              type="button"
+            >
+              <Database size={16} />
+              从文件导入
+            </button>
             <button className="secondary-button" onClick={() => { setImportText(""); setImportError(""); }} type="button">清空</button>
           </div>
         </div>
@@ -2351,7 +3073,7 @@ function ImportExportView({ migration, runAction, runConfirmed, copyText }) {
   );
 }
 
-function SettingsView({ config, service, migration, runAction }) {
+function SettingsView({ config, service, migration, runAction, runConfirmed }) {
   const [host, setHost] = useState(config.service.host);
   const [port, setPort] = useState(config.service.port);
   const [timeoutMs, setTimeoutMs] = useState(config.routing.requestTimeoutMs || 120000);
@@ -2402,6 +3124,40 @@ function SettingsView({ config, service, migration, runAction }) {
       </section>
 
       <section className="panel">
+        <h2>日志与隐私</h2>
+        <div className="settings-row">
+          <div>
+            <div className="strong">写入请求日志</div>
+            <p className="muted">记录每次请求的路由、Token 和缓存命中。</p>
+          </div>
+          <label className="switch large">
+            <input
+              checked={config.logging?.enabled !== false}
+              type="checkbox"
+              aria-label="开启或关闭请求日志"
+              onChange={(event) => runAction(() => bridge.setLogging({ enabled: event.target.checked }), "日志开关已更新")}
+            />
+            <span />
+          </label>
+        </div>
+        <div className="settings-row">
+          <div>
+            <div className="strong">在历史中保留 prompt</div>
+            <p className="muted">关闭后请求历史只保留 metadata，不写入用户对话内容。</p>
+          </div>
+          <label className="switch large">
+            <input
+              checked={Boolean(config.logging?.includePrompt)}
+              type="checkbox"
+              aria-label="是否在历史中保留 prompt"
+              onChange={(event) => runAction(() => bridge.setLogging({ includePrompt: event.target.checked }), "prompt 记录策略已更新")}
+            />
+            <span />
+          </label>
+        </div>
+      </section>
+
+      <section className="panel">
         <h2>服务地址</h2>
         <div className="form-grid compact">
           <Field label="Host">
@@ -2412,20 +3168,48 @@ function SettingsView({ config, service, migration, runAction }) {
           </Field>
         </div>
         <div className="button-row">
-          <button className="primary-button" onClick={() => runAction(() => bridge.setService({ host, port }), "服务地址已保存")} type="button">
+          <button
+            className="primary-button"
+            onClick={async () => {
+              const trimmedHost = (host || "").trim();
+              if (!trimmedHost) {
+                return;
+              }
+              const portNumber = Number(port);
+              if (!Number.isFinite(portNumber) || portNumber <= 0 || portNumber > 65535) {
+                return;
+              }
+              await runAction(() => bridge.setService({ host: trimmedHost, port: portNumber }), "服务地址已保存");
+              if (service?.running) {
+                runConfirmed?.({
+                  tone: "info",
+                  title: "重启本地网关？",
+                  body: `服务地址已保存为 http://${trimmedHost}:${portNumber}。当前服务仍在 ${service.baseUrl}，需要重启后才能生效。`,
+                  confirmLabel: "立即重启",
+                  cancelLabel: "稍后",
+                  action: async () => {
+                    await bridge.stopService();
+                    return bridge.startService();
+                  },
+                  successMessage: "服务已使用新地址重启"
+                });
+              }
+            }}
+            type="button"
+          >
             <Save size={16} />
             保存地址
           </button>
         </div>
-        <p className="muted">修改地址后需要重启服务。</p>
+        <p className="muted">修改地址后需要重启服务才会生效。</p>
       </section>
 
       <section className="panel">
         <h2>路径</h2>
         <div className="detail-list">
-          <Row label="配置文件" value={service.configPath} />
-          <Row label="SQLite DB" value={migration?.dbPath} />
-          <Row label="日志文件" value={service.logPath} />
+          <PathRow label="配置文件" value={service.configPath} />
+          <PathRow label="SQLite DB" value={migration?.dbPath} />
+          <PathRow label="日志文件" value={service.logPath} />
           <Row label="Base URL" value={service.baseUrl} />
         </div>
       </section>
@@ -2521,15 +3305,52 @@ function Row({ label, value }) {
   );
 }
 
+function PathRow({ label, value }) {
+  const target = value || "";
+  async function open() {
+    if (!target) {
+      return;
+    }
+    if (typeof bridge.revealPath === "function") {
+      try {
+        await bridge.revealPath(target);
+      } catch {
+        // ignore — silently fail in demo bridge
+      }
+    }
+  }
+  return (
+    <div className="detail-row detail-row-path">
+      <span>{label}</span>
+      <code title={target}>{target || "-"}</code>
+      {target ? (
+        <button
+          className="inline-copy-button"
+          onClick={open}
+          aria-label={`在文件管理器中打开 ${label}`}
+          title="在文件管理器中打开"
+          type="button"
+        >
+          <Database size={14} />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function ProviderBadge({ provider }) {
   const label = provider === "openai-compatible" ? "OpenAI" : provider;
   return <span className={`provider-badge ${provider}`}>{label}</span>;
 }
 
 function ProviderMark({ provider, size = 16 }) {
-  const initial = provider === "openai-compatible" ? "O" : (provider || "?").charAt(0).toUpperCase();
+  const initial = provider === "openai-compatible"
+    ? "OC"
+    : (provider || "?").charAt(0).toUpperCase();
+  const charLength = initial.length;
+  const fontSize = charLength > 1 ? Math.round(size * 0.48) : Math.round(size * 0.62);
   return (
-    <span className={`provider-mark ${provider || "default"}`} style={{ fontSize: Math.round(size * 0.62) }} aria-hidden>
+    <span className={`provider-mark ${provider || "default"}`} style={{ fontSize }} aria-hidden>
       {initial}
     </span>
   );
@@ -2703,18 +3524,20 @@ function ConfirmDialog({ confirm, onCancel, onConfirm }) {
     function handleKeyDown(event) {
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
         onCancel();
         return;
       }
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
+        event.stopPropagation();
         onConfirm();
       }
     }
-    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown, true);
     return () => {
       window.cancelAnimationFrame(focusFrame);
-      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keydown", handleKeyDown, true);
       previousFocus?.focus?.();
     };
   }, [confirm, onCancel, onConfirm]);
@@ -2760,6 +3583,74 @@ function ConfirmDialog({ confirm, onCancel, onConfirm }) {
       </section>
     </div>
   );
+}
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    if (typeof console !== "undefined") {
+      console.error("[AiHub] renderer crashed:", error, info?.componentStack);
+    }
+  }
+
+  handleReload = () => {
+    if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
+      window.location.reload();
+    }
+  };
+
+  handleReset = () => {
+    this.setState({ error: null });
+  };
+
+  render() {
+    const { error } = this.state;
+    if (!error) {
+      return this.props.children;
+    }
+    const message = error?.message || String(error);
+    const stack = error?.stack ? String(error.stack) : "";
+    return (
+      <div className="app-shell error-shell">
+        <main className="workspace">
+          <div className="workspace-content">
+            <section className="panel error-fallback" role="alert">
+              <div className="error-fallback-icon" aria-hidden>
+                <AlertTriangle size={22} />
+              </div>
+              <div className="error-fallback-body">
+                <div className="modal-kicker">Renderer Crash</div>
+                <h2>客户端遇到一个错误</h2>
+                <p className="muted">
+                  界面已被错误边界拦截，本地服务和数据未受影响。可以尝试重置当前视图，必要时整体重新加载。
+                </p>
+                <pre className="error-fallback-message">{message}</pre>
+                {stack ? <details className="error-fallback-stack"><summary>错误堆栈</summary><pre>{stack}</pre></details> : null}
+                <div className="button-row">
+                  <button className="primary-button" onClick={this.handleReset} type="button">
+                    <RefreshCw size={16} />
+                    重置当前视图
+                  </button>
+                  <button className="secondary-button" onClick={this.handleReload} type="button">
+                    <Activity size={16} />
+                    重新加载客户端
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+    );
+  }
 }
 
 function LoadingState() {
@@ -2851,6 +3742,21 @@ function formatNumber(value) {
   return new Intl.NumberFormat("zh-CN").format(Number(value || 0));
 }
 
+function formatTokenLabel(value) {
+  if (value == null || !Number.isFinite(Number(value))) {
+    return "—";
+  }
+  return `${formatNumber(value)} tk`;
+}
+
+function formatPercentOrDash(value, denominator) {
+  const denom = Number(denominator);
+  if (!Number.isFinite(denom) || denom <= 0) {
+    return "—";
+  }
+  return formatPercent(value);
+}
+
 function formatPercent(value) {
   return `${Math.round(Number(value || 0) * 1000) / 10}%`;
 }
@@ -2882,6 +3788,15 @@ function formatCompactNumber(value) {
 function cacheHitRate(usage = {}) {
   const inputTokens = Number(usage?.inputTokens || 0);
   return inputTokens > 0 ? Number(usage?.cachedInputTokens || 0) / inputTokens : 0;
+}
+
+function buildOpenAiEnvSnippet(service, platformKeys = []) {
+  const baseUrl = service?.baseUrl || "http://127.0.0.1:8787/v1";
+  const enabledKey = (platformKeys || []).find((key) => key?.enabled);
+  const tokenLine = enabledKey?.keyPrefix
+    ? `# 使用平台 Key "${enabledKey.name}" (${enabledKey.keyPrefix})，导出实际 Key 值：\nexport OPENAI_API_KEY="<your-platform-key>"`
+    : `# 未创建平台 Key，可暂用兼容旧用法的占位\nexport OPENAI_API_KEY="aihub-local"`;
+  return `export OPENAI_BASE_URL="${baseUrl}"\n${tokenLine}`;
 }
 
 function allConfiguredModels(config = {}) {
@@ -2939,11 +3854,30 @@ function toggleThemeWithReveal(buttonEl, currentTheme, setTheme) {
 }
 
 function getInitialTheme() {
+  const fromBridge = bridge?.initialTheme;
+  if (fromBridge === "light" || fromBridge === "dark") {
+    return fromBridge;
+  }
   const stored = window.localStorage?.getItem(THEME_STORAGE_KEY);
   if (stored === "light" || stored === "dark") {
     return stored;
   }
+  if (typeof window !== "undefined" && window.matchMedia) {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
   return "light";
+}
+
+function getInitialView() {
+  try {
+    const stored = window.localStorage?.getItem(ACTIVE_VIEW_STORAGE_KEY);
+    if (stored && navItems.some((item) => item.id === stored)) {
+      return stored;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return "dashboard";
 }
 
 function createBrowserBridge() {
@@ -3015,6 +3949,8 @@ function createBrowserBridge() {
   }
 
   return {
+    initialTheme: null,
+    persistTheme: async () => true,
     readConfig: async () => configSnapshot(),
     configPath: async () => "~/.aihub/config.json",
     setService: async ({ host, port }) => {
@@ -3038,6 +3974,16 @@ function createBrowserBridge() {
       persist();
       return configSnapshot();
     },
+    setLogging: async (payload = {}) => {
+      state.config.logging = {
+        ...state.config.logging,
+        ...(typeof payload.enabled === "boolean" ? { enabled: payload.enabled } : {}),
+        ...(typeof payload.includePrompt === "boolean" ? { includePrompt: payload.includePrompt } : {})
+      };
+      persist();
+      return configSnapshot();
+    },
+    revealPath: async () => true,
     upsertSubscription: async (subscription) => {
       const originalName = subscription.originalName || subscription.name;
       const targetExists = state.config.subscriptions.some((item) => item.name === subscription.name);
@@ -3242,6 +4188,42 @@ function createBrowserBridge() {
       persist();
       return configSnapshot();
     },
+    saveExportToFile: async ({ content, suggestedName } = {}) => {
+      if (typeof content !== "string") {
+        return { canceled: true };
+      }
+      try {
+        const blob = new Blob([content], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = suggestedName || "aihub-export.json";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        return { canceled: false, filePath: link.download };
+      } catch {
+        return { canceled: true };
+      }
+    },
+    openImportFromFile: async () => new Promise((resolve) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "application/json,.json";
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) {
+          resolve({ canceled: true });
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => resolve({ canceled: false, filePath: file.name, content: String(reader.result || "") });
+        reader.onerror = () => resolve({ canceled: true });
+        reader.readAsText(file);
+      };
+      input.click();
+    }),
     migrationStatus: async () => ({
       dbPath: "~/.aihub/aihub.db",
       configPath: "~/.aihub/config.json",
@@ -3368,4 +4350,8 @@ function finalizeClientUsage(stats) {
 const rootElement = document.getElementById("root");
 const root = window.__aihubReactRoot || createRoot(rootElement);
 window.__aihubReactRoot = root;
-root.render(<App />);
+root.render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
