@@ -98,6 +98,7 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [confirm, setConfirm] = useState(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [updaterState, setUpdaterState] = useState(null);
   const searchFocusRef = useRef(null);
 
   const dismissToast = useCallback((id) => {
@@ -274,6 +275,28 @@ function App() {
   useEffect(() => {
     refreshAll().catch((nextError) => reportError(nextError));
   }, [refreshAll, reportError]);
+
+  useEffect(() => {
+    const updater = bridge.updater;
+    if (!updater) {
+      return undefined;
+    }
+    updater.getState?.().then((initial) => {
+      if (initial) {
+        setUpdaterState(initial);
+      }
+    }).catch(() => {});
+    const unsubscribe = updater.onState?.((next) => {
+      if (next) {
+        setUpdaterState(next);
+      }
+    });
+    return () => {
+      if (typeof unsubscribe === "function") {
+        unsubscribe();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -513,6 +536,7 @@ function App() {
               </div>
             </div>
           ) : null}
+          <UpdateBanner updaterState={updaterState} />
           {config && service ? (
             <WorkspaceStatusBar
               config={config}
@@ -544,6 +568,7 @@ function App() {
               runAction={runAction}
               refreshAll={refreshAll}
               refreshLogs={refreshLogs}
+              updaterState={updaterState}
               providerUsage={providerUsage}
               setProviderUsage={setProviderUsage}
               setActiveView={setActiveView}
@@ -3073,7 +3098,7 @@ function ImportExportView({ migration, runAction, runConfirmed, copyText, notify
   );
 }
 
-function SettingsView({ config, service, migration, runAction, runConfirmed }) {
+function SettingsView({ config, service, migration, runAction, runConfirmed, updaterState }) {
   const [host, setHost] = useState(config.service.host);
   const [port, setPort] = useState(config.service.port);
   const [timeoutMs, setTimeoutMs] = useState(config.routing.requestTimeoutMs || 120000);
@@ -3213,6 +3238,8 @@ function SettingsView({ config, service, migration, runAction, runConfirmed }) {
           <Row label="Base URL" value={service.baseUrl} />
         </div>
       </section>
+
+      <UpdaterCard updaterState={updaterState} />
     </div>
   );
 }
@@ -3582,6 +3609,225 @@ function ConfirmDialog({ confirm, onCancel, onConfirm }) {
         </div>
       </section>
     </div>
+  );
+}
+
+function UpdateBanner({ updaterState }) {
+  if (!updaterState) {
+    return null;
+  }
+  const { stage, availableVersion, message } = updaterState;
+  if (stage === "available") {
+    return (
+      <div className="message-strip update-banner update-available" role="status">
+        <Activity size={16} />
+        <div>
+          <div className="strong">发现新版本 {availableVersion || ""}</div>
+          <p className="muted">{message || "可以在设置页下载并安装。"}</p>
+        </div>
+        <button
+          className="primary-button"
+          onClick={() => bridge.updater?.download?.()}
+          type="button"
+        >
+          下载更新
+        </button>
+      </div>
+    );
+  }
+  if (stage === "downloading") {
+    const percent = updaterState.progress?.percent ?? 0;
+    return (
+      <div className="message-strip update-banner update-downloading" role="status">
+        <Loader2 className="spin" size={16} />
+        <div>
+          <div className="strong">正在下载 {availableVersion || "新版本"}</div>
+          <div className="update-progress-bar">
+            <div className="update-progress-fill" style={{ width: `${percent}%` }} />
+          </div>
+          <p className="muted">{percent.toFixed(1)}%{updaterState.progress?.bytesPerSecond ? ` · ${formatBytes(updaterState.progress.bytesPerSecond)}/s` : ""}</p>
+        </div>
+      </div>
+    );
+  }
+  if (stage === "downloaded") {
+    return (
+      <div className="message-strip update-banner update-downloaded" role="status">
+        <CheckCircle2 size={16} />
+        <div>
+          <div className="strong">新版本 {availableVersion || ""} 已就绪</div>
+          <p className="muted">重启客户端即可完成安装。</p>
+        </div>
+        <button
+          className="primary-button"
+          onClick={() => bridge.updater?.install?.()}
+          type="button"
+        >
+          立即重启安装
+        </button>
+      </div>
+    );
+  }
+  return null;
+}
+
+function formatBytes(bytes) {
+  if (!bytes || !Number.isFinite(bytes)) {
+    return "0 B";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function UpdaterCard({ updaterState }) {
+  const [checking, setChecking] = useState(false);
+  const state = updaterState || {};
+  const {
+    stage = "idle",
+    currentVersion = "0.1.0",
+    availableVersion = "",
+    message = "",
+    lastCheckedAt = "",
+    lastError = "",
+    releaseNotes = "",
+    releaseName = "",
+    autoCheck = true,
+    autoDownload = true,
+    enabled = false,
+    progress = null
+  } = state;
+
+  async function handleCheck() {
+    setChecking(true);
+    try {
+      await bridge.updater?.check?.({ silent: false });
+    } catch {
+      // error surfaced via state
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  const stageLabel = {
+    idle: "就绪",
+    checking: "检查中…",
+    available: "有新版本",
+    "not-available": "已是最新",
+    downloading: "下载中",
+    downloaded: "已下载",
+    error: "出错",
+    disabled: "不可用"
+  }[stage] || stage;
+
+  const isDownloading = stage === "downloading";
+  const isDownloaded = stage === "downloaded";
+  const isAvailable = stage === "available";
+  const percent = progress?.percent ?? 0;
+
+  return (
+    <section className="panel updater-card">
+      <h2>软件更新</h2>
+      <div className="detail-list">
+        <Row label="当前版本" value={currentVersion} />
+        <Row label="最新版本" value={availableVersion || "—"} />
+        <Row label="状态" value={stageLabel} />
+        {releaseName ? <Row label="版本名" value={releaseName} /> : null}
+        {lastCheckedAt ? <Row label="上次检查" value={new Date(lastCheckedAt).toLocaleString("zh-CN")} /> : null}
+        {lastError ? <Row label="错误" value={lastError} /> : null}
+      </div>
+
+      {isDownloading ? (
+        <div className="updater-progress">
+          <div className="update-progress-bar large">
+            <div className="update-progress-fill" style={{ width: `${percent}%` }} />
+          </div>
+          <span className="muted">{percent.toFixed(1)}%{progress?.bytesPerSecond ? ` · ${formatBytes(progress.bytesPerSecond)}/s` : ""}</span>
+        </div>
+      ) : null}
+
+      {releaseNotes ? (
+        <details className="updater-notes">
+          <summary>更新日志</summary>
+          <pre>{releaseNotes}</pre>
+        </details>
+      ) : null}
+
+      <div className="button-row updater-actions">
+        <button
+          className="primary-button"
+          onClick={handleCheck}
+          disabled={checking || isDownloading || !enabled}
+          type="button"
+        >
+          {checking || stage === "checking" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+          检查更新
+        </button>
+        {isAvailable ? (
+          <button
+            className="primary-button"
+            onClick={() => bridge.updater?.download?.()}
+            type="button"
+          >
+            <Activity size={16} />
+            下载更新
+          </button>
+        ) : null}
+        {isDownloaded ? (
+          <button
+            className="danger-button solid"
+            onClick={() => bridge.updater?.install?.()}
+            type="button"
+          >
+            <Play size={16} />
+            重启安装
+          </button>
+        ) : null}
+      </div>
+
+      {!enabled ? (
+        <p className="muted updater-disabled-hint">开发模式下自动更新不可用。打包后的客户端会自动从 GitHub Releases 检查更新。</p>
+      ) : null}
+
+      <div className="settings-row updater-setting">
+        <div>
+          <div className="strong">启动时自动检查</div>
+          <p className="muted">每次打开客户端时静默检查 GitHub Releases。</p>
+        </div>
+        <label className="switch large">
+          <input
+            checked={autoCheck}
+            type="checkbox"
+            aria-label="启动时自动检查更新"
+            onChange={(event) => bridge.updater?.setSettings?.({ autoCheck: event.target.checked })}
+          />
+          <span />
+        </label>
+      </div>
+      <div className="settings-row updater-setting">
+        <div>
+          <div className="strong">发现新版本后自动下载</div>
+          <p className="muted">关闭后需要手动点击"下载更新"。</p>
+        </div>
+        <label className="switch large">
+          <input
+            checked={autoDownload}
+            type="checkbox"
+            aria-label="自动下载更新"
+            onChange={(event) => bridge.updater?.setSettings?.({ autoDownload: event.target.checked })}
+          />
+          <span />
+        </label>
+      </div>
+
+      {message && stage !== "idle" && stage !== "not-available" ? (
+        <div className={`dialog-status ${stage === "error" ? "error" : "success"}`}>{message}</div>
+      ) : null}
+    </section>
   );
 }
 
@@ -4233,6 +4479,28 @@ function createBrowserBridge() {
       platformKeys: state.platformKeys.length,
       modelAliases: state.config.modelAliases.length
     }),
+    updater: {
+      getState: async () => ({
+        stage: "disabled",
+        message: "浏览器演示模式不支持自动更新。",
+        currentVersion: "0.1.0",
+        availableVersion: "",
+        releaseNotes: "",
+        releaseName: "",
+        releaseDate: "",
+        progress: null,
+        lastCheckedAt: "",
+        lastError: "",
+        enabled: false,
+        autoCheck: true,
+        autoDownload: true
+      }),
+      check: async () => ({}),
+      download: async () => ({}),
+      install: async () => true,
+      setSettings: async () => ({}),
+      onState: () => () => {}
+    },
     sendChat: async (request) => {
       const usage = {
         inputTokens: 120,

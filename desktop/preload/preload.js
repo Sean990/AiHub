@@ -55,5 +55,26 @@ contextBridge.exposeInMainWorld("aihub", {
   importStore: (payload) => invoke("store:import", payload),
   saveExportToFile: (payload) => invoke("ui:saveExport", payload),
   openImportFromFile: () => invoke("ui:openImport"),
-  migrationStatus: () => invoke("migration:status")
+  migrationStatus: () => invoke("migration:status"),
+  updater: {
+    getState: () => invoke("updater:state"),
+    check: (payload) => invoke("updater:check", payload),
+    download: () => invoke("updater:download"),
+    install: () => invoke("updater:install"),
+    setSettings: (payload) => invoke("updater:setSettings", payload),
+    onState: (handler) => {
+      if (typeof handler !== "function") {
+        return () => {};
+      }
+      const listener = (_event, state) => {
+        try {
+          handler(state);
+        } catch (error) {
+          console.warn("[AiHub] updater state handler error:", error);
+        }
+      };
+      ipcRenderer.on("updater:state", listener);
+      return () => ipcRenderer.removeListener("updater:state", listener);
+    }
+  }
 });

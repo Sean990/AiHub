@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerIpcHandlers } from "./ipc-handlers.js";
 import { stopManagedService } from "./service-controller.js";
+import { initializeUpdater } from "./updater-controller.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -89,7 +90,12 @@ async function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  await createWindow();
+  initializeUpdater().catch((error) => {
+    console.warn("[AiHub] failed to initialize updater:", error?.message || error);
+  });
+});
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

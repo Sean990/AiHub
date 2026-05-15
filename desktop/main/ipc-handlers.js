@@ -2,6 +2,14 @@ import { ipcMain, dialog, shell } from "electron";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
+  checkForUpdates,
+  downloadUpdate,
+  getUpdaterState,
+  initializeUpdater,
+  quitAndInstall,
+  setUpdaterSettings
+} from "./updater-controller.js";
+import {
   getManagedServiceStatus,
   getDesktopConfigPath,
   createDesktopPlatformKey,
@@ -139,4 +147,16 @@ export function registerIpcHandlers({ persistTheme } = {}) {
     const content = await fs.readFile(filePath, "utf8");
     return { canceled: false, filePath, content };
   });
+
+  ipcMain.handle("updater:state", async () => {
+    await initializeUpdater();
+    return getUpdaterState();
+  });
+  ipcMain.handle("updater:check", async (_event, payload) => checkForUpdates({ silent: Boolean(payload?.silent) }));
+  ipcMain.handle("updater:download", async () => downloadUpdate());
+  ipcMain.handle("updater:install", async () => {
+    quitAndInstall();
+    return true;
+  });
+  ipcMain.handle("updater:setSettings", async (_event, payload) => setUpdaterSettings(payload || {}));
 }

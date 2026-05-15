@@ -25,6 +25,14 @@
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "icon": "build/icon.png",
     "asar": true,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Sean990",
+        "repo": "AiHub",
+        "releaseType": "release"
+      }
+    ],
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/",
       "cache": "build/electron-cache"
@@ -89,6 +97,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "lucide-react": "^1.14.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"

@@ -3437,3 +3437,105 @@ tbody tr:hover td {
 .theme-toggle:active {
   transform: scale(0.94);
 }
+
+/* ---------- Updater ---------- */
+
+.update-banner {
+  color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.08);
+  border-color: hsl(var(--primary) / 0.28);
+  align-items: flex-start;
+  gap: var(--space-md);
+}
+
+.update-banner > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.update-banner .strong {
+  color: hsl(var(--foreground));
+  font-weight: 600;
+}
+
+.update-banner p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
+.update-downloaded {
+  color: hsl(var(--success));
+  background: hsl(var(--success) / 0.08);
+  border-color: hsl(var(--success) / 0.28);
+}
+
+.update-progress-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: hsl(var(--muted));
+  overflow: hidden;
+  margin-top: var(--space-xs);
+}
+
+.update-progress-bar.large {
+  height: 8px;
+  border-radius: 4px;
+  margin: var(--space-md) 0 var(--space-xs);
+}
+
+.update-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: hsl(var(--primary));
+  transition: width 200ms ease;
+}
+
+.updater-card {
+  margin-top: var(--space-lg);
+}
+
+.updater-progress {
+  margin-top: var(--space-md);
+}
+
+.updater-notes {
+  margin-top: var(--space-md);
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
+.updater-notes summary {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 500;
+  color: hsl(var(--foreground));
+}
+
+.updater-notes pre {
+  margin-top: var(--space-sm);
+  padding: var(--space-md);
+  border-radius: 10px;
+  background: hsl(var(--muted) / 0.5);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.updater-actions {
+  margin-top: var(--space-md);
+}
+
+.updater-setting {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid hsl(var(--border));
+}
+
+.updater-disabled-hint {
+  margin-top: var(--space-md);
+  font-size: 12px;
+}
